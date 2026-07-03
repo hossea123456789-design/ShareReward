@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '4.0.0';
+const APP_VERSION = '4.1.0';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 
 const statusMap = {
@@ -41,6 +41,10 @@ const app = $('#app');
 init();
 
 function init() {
+  // 새로 열 때는 항상 홈에서 시작합니다. 마지막으로 열어둔 탭/상세 화면은 공유 데이터가 아니라 UI 상태입니다.
+  state.activeTab = 'home';
+  state.detailId = null;
+  saveState({ localOnly: true });
   bindGlobalEvents();
   setTodayToEntryDialog();
   render();
@@ -54,7 +58,7 @@ function bindGlobalEvents() {
     btn.addEventListener('click', () => {
       state.activeTab = btn.dataset.tab;
       state.detailId = null;
-      saveState();
+      saveState({ localOnly: true });
       render();
     });
   });
@@ -205,7 +209,7 @@ async function loadRemoteOnStart() {
     setRemoteStatus('local');
     return;
   }
-  await pullRemoteState({ silent: true });
+  await pullRemoteState({ silent: true, initial: true });
 }
 
 function queueRemoteSave() {
@@ -231,14 +235,13 @@ async function pushRemoteState({ silent = false } = {}) {
     remoteUpdatedAt = result.updatedAt || new Date().toISOString();
     localStorage.setItem('bossSplitLedger.remoteUpdatedAt.v1', remoteUpdatedAt);
     setRemoteStatus('saved', silent ? '' : '공유 저장소에 올렸습니다.');
-    if (state.activeTab === 'settings') render();
   } catch (error) {
     console.warn(error);
     setRemoteStatus('error', silent ? '' : '공유 저장에 실패했습니다. URL/배포 권한을 확인하세요.');
   }
 }
 
-async function pullRemoteState({ silent = false } = {}) {
+async function pullRemoteState({ silent = false, initial = false } = {}) {
   const url = getRemoteUrl();
   if (!url) {
     if (!silent) showToast('설정에서 Apps Script 웹앱 URL을 먼저 입력하세요.');
@@ -254,7 +257,7 @@ async function pullRemoteState({ silent = false } = {}) {
       if (!silent) showToast('공유 저장소가 비어 있어 현재 데이터를 올렸습니다.');
       return;
     }
-    const keepTab = state.activeTab || 'home';
+    const keepTab = initial ? 'home' : (state.activeTab || 'home');
     const normalized = normalizeState(result.state || {});
     state = { ...normalized, activeTab: keepTab, detailId: null };
     remoteUpdatedAt = result.updatedAt || result.state?.updatedAt || '';
@@ -652,7 +655,7 @@ function handleAppClick(event) {
   const actions = {
     'new-entry': () => openEntryDialog(),
     detail: () => openDetail(id),
-    'back-list': () => { state.detailId = null; saveState(); render(); },
+    'back-list': () => { state.detailId = null; saveState({ localOnly: true }); render(); },
     'edit-entry': () => openEntryDialog(findEntry(id)),
     'delete-entry': () => deleteEntry(id),
     'open-sale': () => openSaleDialog(id),
@@ -714,7 +717,7 @@ function clearRemoteUrl() {
 
 function openDetail(id) {
   state.detailId = id;
-  saveState();
+  saveState({ localOnly: true });
   render();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }

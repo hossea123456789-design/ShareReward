@@ -1,4 +1,4 @@
-# 보스 정산 공유 웹앱 v4
+# 보스 정산 공유 웹앱 v4.1
 
 ## 구성
 
@@ -71,3 +71,11 @@ https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMf
 ```
 
 GitHub Pages에는 `index.html`, `style.css`, `app.js`, `README.md`를 교체 업로드하면 된다.
+
+
+## v4.1 수정 내역
+
+- 웹페이지를 새로 열면 항상 홈 화면에서 시작하도록 수정했습니다.
+- 하단 탭 이동, 상세 화면 이동 같은 UI 상태 변경은 공유 저장소에 올리지 않도록 분리했습니다.
+- 정산 규칙 저장 후 공유 저장이 완료될 때 설정 화면이 다시 그려져 입력값이 덮이는 느낌이 나던 문제를 줄였습니다.
+- Apps Script 기본 연결 URL은 기존과 동일하게 포함되어 있습니다.
