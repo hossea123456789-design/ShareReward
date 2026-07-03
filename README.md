@@ -60,3 +60,14 @@ GitHub Pages, Netlify, Cloudflare Pages 같은 정적 호스팅에 `index.html`,
 - 여러 사람이 동시에 같은 정산 건을 수정하면 나중에 저장한 내용이 남습니다.
 - 민감한 개인정보나 계좌번호는 넣지 않는 것을 권장합니다.
 - Apps Script 액세스 권한을 `모든 사용자`로 열면 URL을 아는 사람이 접근할 수 있습니다.
+
+
+## v4 연결 적용
+
+Apps Script 기본 URL이 `index.html`과 `app.js`에 내장되어 있다.
+
+```text
+https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec
+```
+
+GitHub Pages에는 `index.html`, `style.css`, `app.js`, `README.md`를 교체 업로드하면 된다.

@@ -2,7 +2,7 @@ const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
 const APP_VERSION = '4.0.0';
-const DEFAULT_REMOTE_URL = ''; // 배포 후 Apps Script /exec URL을 여기에 넣으면 사용자별 입력 없이 바로 공유됩니다.
+const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 
 const statusMap = {
   waiting: { label: '판매대기', cls: 'waiting' },
