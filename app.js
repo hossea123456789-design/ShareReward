@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '4.2.0';
+const APP_VERSION = '4.3.0';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 
 const statusMap = {
@@ -629,7 +629,6 @@ function entryCard(entry) {
         <span class="badge ${st.cls}">${st.label}</span>
       </div>
       <div class="item-meta">
-        <span class="badge draft">${escapeHtml(entry.partyName)}</span>
         <span class="badge draft">${saleLine}</span>
         ${entry.status === 'settling' ? `<span class="badge problem">미지급 ${entry.members.length - paidCount(entry)}명</span>` : ''}
       </div>
@@ -1229,19 +1228,26 @@ function normalizeDateValue(value) {
   if (!value) return '';
   if (value instanceof Date && !Number.isNaN(value.getTime())) return dateToYmd(value);
 
-  const text = String(value).trim();
+  let text = String(value).trim();
   if (!text) return '';
 
-  const numeric = text.match(/^(\d{4})[-./](\d{1,2})[-./](\d{1,2})/);
+  // 이전 버전에서 만들어진 "...undefined.undefined" 꼬리 문구를 먼저 제거합니다.
+  text = text.replace(/(?:\.undefined)+$/g, '').trim();
+
+  // Google Sheets/Apps Script가 날짜를 문자열로 바꿔 내려주는 여러 케이스를 흡수합니다.
+  // 1) 2026-06-27, 2026.06.27, 2026/06/27
+  const numeric = text.match(/(\d{4})[-./](\d{1,2})[-./](\d{1,2})/);
   if (numeric) return `${numeric[1]}-${numeric[2].padStart(2, '0')}-${numeric[3].padStart(2, '0')}`;
 
-  const englishDate = text.match(/^[A-Za-z]{3}\s+([A-Za-z]{3})\s+(\d{1,2})\s+(\d{4})/);
+  // 2) Sat Jun 27 2026 00:00:00 GMT+0900 (한국 표준시)
+  const englishDate = text.match(/[A-Za-z]{3}\s+([A-Za-z]{3})\s+(\d{1,2})\s+(\d{4})/);
   if (englishDate) {
     const monthMap = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
     const month = monthMap[englishDate[1]];
     if (month) return `${englishDate[3]}-${month}-${englishDate[2].padStart(2, '0')}`;
   }
 
+  // 3) ISO 문자열 등 브라우저가 해석 가능한 날짜
   const parsed = new Date(text);
   if (!Number.isNaN(parsed.getTime())) return dateToYmd(parsed);
 
