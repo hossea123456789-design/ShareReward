@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '4.1.0';
+const APP_VERSION = '4.2.0';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 
 const statusMap = {
@@ -117,7 +117,7 @@ function normalizeState(data) {
   }));
   next.entries = next.entries.map((entry) => ({
     id: entry.id || uid(),
-    date: entry.date || new Date().toISOString().slice(0, 10),
+    date: normalizeDateValue(entry.date) || new Date().toISOString().slice(0, 10),
     boss: entry.boss || '보스 미입력',
     partyName: entry.partyName || '임시 파티',
     members: Array.isArray(entry.members) ? entry.members.filter(Boolean) : [],
@@ -432,7 +432,7 @@ function renderDetail(id) {
       <div class="item-head">
         <div>
           <div class="item-title">${escapeHtml(entry.boss)} 정산</div>
-          <div class="item-sub">${formatDate(entry.date)} · ${escapeHtml(entry.partyName)} · ${entry.members.length}인</div>
+          <div class="item-sub">${formatDate(entry.date)} · ${entry.members.length}인</div>
         </div>
         <span class="badge ${st.cls}">${st.label}</span>
       </div>
@@ -624,7 +624,7 @@ function entryCard(entry) {
       <div class="item-head">
         <div>
           <div class="item-title">${escapeHtml(entry.boss)}</div>
-          <div class="item-sub">${formatDate(entry.date)} · ${entry.members.length}인 · ${escapeHtml(entry.item)}</div>
+          <div class="item-sub">${formatShortDate(entry.date)} · ${entry.members.length}인 · ${escapeHtml(entry.item || '아이템 미입력')}</div>
         </div>
         <span class="badge ${st.cls}">${st.label}</span>
       </div>
@@ -797,7 +797,7 @@ function handleEntrySubmit(event) {
   const party = findParty($('#entryParty').value);
   const payload = {
     id,
-    date: $('#entryDate').value,
+    date: normalizeDateValue($('#entryDate').value) || new Date().toISOString().slice(0, 10),
     boss: $('#entryBoss').value,
     partyName: party?.name || '직접 선택',
     members,
@@ -829,7 +829,7 @@ function openSaleDialog(id) {
   const entry = findEntry(id);
   if (!entry) return;
   $('#saleEntryId').value = id;
-  $('#saleTarget').innerHTML = `<b>${escapeHtml(entry.item)}</b><div class="item-sub">${escapeHtml(entry.boss)} · ${entry.members.length}인 · 예상가 ${formatAmount(entry.expectedPrice)}</div>`;
+  $('#saleTarget').innerHTML = `<b>${escapeHtml(entry.item)}</b><div class="item-sub">${formatShortDate(entry.date)} · ${escapeHtml(entry.boss)} · ${entry.members.length}인</div>`;
   $('#salePrice').value = entry.sale?.salePrice || entry.expectedPrice || '';
   $('#feeMode').value = entry.sale?.feeMode || state.settings.feeMode;
   $('#feeValue').value = entry.sale?.feeValue ?? state.settings.feeValue;
@@ -1225,10 +1225,52 @@ function trimDecimal(num) {
   return Number(num).toLocaleString('ko-KR', { maximumFractionDigits: 6 });
 }
 
+function normalizeDateValue(value) {
+  if (!value) return '';
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return dateToYmd(value);
+
+  const text = String(value).trim();
+  if (!text) return '';
+
+  const numeric = text.match(/^(\d{4})[-./](\d{1,2})[-./](\d{1,2})/);
+  if (numeric) return `${numeric[1]}-${numeric[2].padStart(2, '0')}-${numeric[3].padStart(2, '0')}`;
+
+  const englishDate = text.match(/^[A-Za-z]{3}\s+([A-Za-z]{3})\s+(\d{1,2})\s+(\d{4})/);
+  if (englishDate) {
+    const monthMap = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
+    const month = monthMap[englishDate[1]];
+    if (month) return `${englishDate[3]}-${month}-${englishDate[2].padStart(2, '0')}`;
+  }
+
+  const parsed = new Date(text);
+  if (!Number.isNaN(parsed.getTime())) return dateToYmd(parsed);
+
+  return text;
+}
+
+function dateToYmd(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function getDateParts(value) {
+  const normalized = normalizeDateValue(value);
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return match ? { y: match[1], m: match[2], d: match[3] } : null;
+}
+
 function formatDate(date) {
-  if (!date) return '-';
-  const [y, m, d] = date.split('-');
-  return `${y}.${m}.${d}`;
+  const parts = getDateParts(date);
+  if (!parts) return date ? String(date) : '-';
+  return `${parts.y}.${parts.m}.${parts.d}`;
+}
+
+function formatShortDate(date) {
+  const parts = getDateParts(date);
+  if (!parts) return date ? String(date) : '-';
+  return `${parts.m}.${parts.d}`;
 }
 
 function formatDateTime(value) {
