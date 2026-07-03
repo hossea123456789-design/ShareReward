@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111318" />
+  <title>보스 정산 공유 웹앱</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Boss Split Ledger</p>
+        <h1>보스 정산</h1>
+      </div>
+      <div class="top-actions">
+        <span id="syncBadge" class="sync-badge local">로컬</span>
+        <button id="quickAddBtn" class="primary small">+ 새 정산</button>
+      </div>
+    </header>
+
+    <main id="app" class="content" aria-live="polite"></main>
+
+    <nav class="bottom-nav" aria-label="하단 메뉴">
+      <button data-tab="home" class="nav-item active">홈</button>
+      <button data-tab="waiting" class="nav-item">판매대기</button>
+      <button data-tab="settling" class="nav-item">정산중</button>
+      <button data-tab="done" class="nav-item">완료</button>
+      <button data-tab="settings" class="nav-item">설정</button>
+    </nav>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <dialog id="entryDialog" class="dialog">
+    <form id="entryForm" method="dialog" class="dialog-card">
+      <div class="dialog-head">
+        <h2 id="entryDialogTitle">새 정산 만들기</h2>
+        <button type="button" class="ghost icon" data-close-dialog>×</button>
+      </div>
+
+      <input type="hidden" id="entryId" />
+
+      <label class="field">
+        <span>날짜</span>
+        <input id="entryDate" type="date" required />
+      </label>
+
+      <div class="field-grid">
+        <label class="field">
+          <span>보스</span>
+          <select id="entryBoss"></select>
+        </label>
+        <label class="field">
+          <span>파티</span>
+          <select id="entryParty"></select>
+        </label>
+      </div>
+
+      <label class="field">
+        <span>아이템명</span>
+        <input id="entryItem" type="text" placeholder="예: 몽환의 벨트" required />
+      </label>
+
+      <label class="field">
+        <span>예상 판매가, 억 단위</span>
+        <input id="entryExpectedPrice" type="number" step="0.001" min="0" placeholder="예: 120" />
+      </label>
+
+      <section class="field">
+        <span>참여자</span>
+        <div id="entryMembers" class="check-list"></div>
+        <div class="inline-add">
+          <input id="entryNewMember" type="text" placeholder="참여자 추가" />
+          <button type="button" id="addTempMemberBtn" class="secondary">추가</button>
+        </div>
+      </section>
+
+      <label class="field">
+        <span>메모</span>
+        <textarea id="entryMemo" rows="3" placeholder="예: 거래소 판매 후 4인 정산"></textarea>
+      </label>
+
+      <div class="dialog-actions">
+        <button type="button" class="ghost" data-close-dialog>취소</button>
+        <button type="submit" class="primary">저장</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="saleDialog" class="dialog">
+    <form id="saleForm" method="dialog" class="dialog-card">
+      <div class="dialog-head">
+        <h2>판매 완료 입력</h2>
+        <button type="button" class="ghost icon" data-close-sale-dialog>×</button>
+      </div>
+
+      <input type="hidden" id="saleEntryId" />
+      <div class="sale-target" id="saleTarget"></div>
+
+      <label class="field">
+        <span>실제 판매가, 억 단위</span>
+        <input id="salePrice" type="number" step="0.001" min="0" placeholder="예: 118" required />
+      </label>
+
+      <div class="field-grid">
+        <label class="field">
+          <span>수수료 방식</span>
+          <select id="feeMode">
+            <option value="percent">퍼센트</option>
+            <option value="fixed">고정 금액</option>
+          </select>
+        </label>
+        <label class="field">
+          <span id="feeValueLabel">수수료 %</span>
+          <input id="feeValue" type="number" step="0.001" min="0" />
+        </label>
+      </div>
+
+      <label class="field">
+        <span>정산 제외 금액, 억 단위</span>
+        <input id="excludeAmount" type="number" step="0.001" min="0" value="0" />
+      </label>
+
+      <div class="field-grid">
+        <label class="field">
+          <span>억당 현금가, 원</span>
+          <input id="cashRatePerBillion" type="number" step="1" min="0" placeholder="예: 2500" />
+        </label>
+        <label class="field">
+          <span>현금 전달자/판매자</span>
+          <select id="sellerName"></select>
+        </label>
+      </div>
+
+      <label class="field">
+        <span>반올림 방식</span>
+        <select id="roundingMode">
+          <option value="exact">정확히 나누기</option>
+          <option value="floor_001">0.001억 단위 버림</option>
+          <option value="floor_01">0.01억 단위 버림</option>
+          <option value="round_01">0.01억 단위 반올림</option>
+          <option value="round_1">1억 단위 반올림</option>
+        </select>
+      </label>
+
+      <div class="calc-preview" id="calcPreview"></div>
+
+      <div class="dialog-actions">
+        <button type="button" class="ghost" data-close-sale-dialog>취소</button>
+        <button type="submit" class="primary">정산 생성</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="partyDialog" class="dialog">
+    <form id="partyForm" method="dialog" class="dialog-card">
+      <div class="dialog-head">
+        <h2>파티 추가/수정</h2>
+        <button type="button" class="ghost icon" data-close-party-dialog>×</button>
+      </div>
+      <input type="hidden" id="partyId" />
+      <label class="field">
+        <span>파티명</span>
+        <input id="partyName" type="text" placeholder="예: 금요일 고정팟" required />
+      </label>
+      <label class="field">
+        <span>참여자, 쉼표로 구분</span>
+        <textarea id="partyMembers" rows="3" placeholder="하람, 예원, 민수, 준호" required></textarea>
+      </label>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" data-close-party-dialog>취소</button>
+        <button type="submit" class="primary">저장</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="./app.js"></script>
+</body>
+</html>
