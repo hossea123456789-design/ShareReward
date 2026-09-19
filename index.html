@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#111318" />
   <title>보스 정산 공유 웹앱</title>
-  <link rel="stylesheet" href="./style.css?v=5.0.0" />
+  <link rel="stylesheet" href="./style.css?v=5.1.0" />
 </head>
 <body>
   <div class="app-shell">
@@ -32,58 +32,35 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-  <dialog id="entryDialog" class="dialog">
-    <form id="entryForm" method="dialog" class="dialog-card">
+  <dialog id="entryDialog" class="dialog entry-bulk-dialog">
+    <form id="entryForm" method="dialog" class="dialog-card entry-bulk-card">
       <div class="dialog-head">
-        <h2 id="entryDialogTitle">정산 등록</h2>
+        <div>
+          <h2 id="entryDialogTitle">정산 일괄 등록</h2>
+          <p class="item-sub entry-dialog-desc">한 행이 정산 1건입니다. 필요한 만큼 행을 추가한 뒤 한 번에 등록하세요.</p>
+        </div>
         <button type="button" class="ghost icon" data-close-dialog>×</button>
       </div>
-
       <input type="hidden" id="entryId" />
-
-      <label class="field">
-        <span>날짜</span>
-        <input id="entryDate" type="date" required />
-      </label>
-
-      <div class="field-grid">
-        <label class="field">
-          <span>보스</span>
-          <select id="entryBoss"></select>
-        </label>
-        <label class="field">
-          <span>파티</span>
-          <select id="entryParty"></select>
-        </label>
-      </div>
-
-      <label class="field">
-        <span>아이템명</span>
-        <input id="entryItem" type="text" placeholder="예: 몽환의 벨트" required />
-      </label>
-
-      <label class="field">
-        <span>판매가, 억 단위</span>
-        <input id="entryExpectedPrice" type="number" step="0.001" min="0" placeholder="예: 120" required />
-      </label>
-
-      <section class="field">
-        <span>참여자</span>
-        <div id="entryMembers" class="check-list"></div>
-        <div class="inline-add">
-          <input id="entryNewMember" type="text" placeholder="참여자 추가" />
-          <button type="button" id="addTempMemberBtn" class="secondary">추가</button>
+      <div class="entry-bulk-toolbar">
+        <div>
+          <b id="entryRowCount">1건 입력</b>
+          <span>새 행은 바로 위 행의 날짜·보스·파티·참여자를 복사합니다.</span>
         </div>
-      </section>
-
-      <label class="field">
-        <span>메모</span>
-        <textarea id="entryMemo" rows="3" placeholder="예: 거래소 판매 후 4인 정산"></textarea>
-      </label>
-
+        <button type="button" id="addEntryRowBtn" class="secondary">+ 행 추가</button>
+      </div>
+      <div class="entry-table-wrap">
+        <table class="entry-table">
+          <thead>
+            <tr><th>날짜</th><th>보스</th><th>파티</th><th>참여자</th><th>아이템</th><th>판매가(억)</th><th aria-label="행 삭제"></th></tr>
+          </thead>
+          <tbody id="entryRows"></tbody>
+        </table>
+      </div>
+      <p class="item-sub entry-table-help">참여자는 쉼표로 구분합니다. 파티를 변경하면 해당 파티의 참여자가 자동 입력되며 이후 직접 수정할 수 있습니다.</p>
       <div class="dialog-actions">
         <button type="button" class="ghost" data-close-dialog>취소</button>
-        <button type="submit" class="primary">저장</button>
+        <button type="submit" id="entrySubmitBtn" class="primary">1건 등록</button>
       </div>
     </form>
   </dialog>
@@ -178,6 +155,6 @@
   <script>
     window.BOSS_SPLIT_REMOTE_URL = 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec';
   </script>
-  <script src="./app.js?v=5.0.0"></script>
+  <script src="./app.js?v=5.1.0"></script>
 </body>
 </html>
