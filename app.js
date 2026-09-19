@@ -540,8 +540,9 @@ function renderSettings() {
         </select>
       </label>
       <label class="field">
-        <span>기본 억당 현금가, 원</span>
+        <span>현재 억당 시세, 원</span>
         <input id="settingCashRatePerBillion" type="number" step="1" min="0" value="${state.settings.cashRatePerBillion || 0}" placeholder="예: 2500" />
+        <span class="item-sub">정산대기 건은 이 시세를 즉시 반영하고, 완료 시점에 시세가 고정됩니다.</span>
       </label>
       <div class="item-actions">
         <button class="primary" data-action="save-rules">정산 규칙 저장</button>
@@ -613,7 +614,8 @@ function entryCard(entry) {
   const pending = isPendingEntry(entry);
   const st = pending ? statusMap.waiting : statusMap.done;
   const calc = calculateEntry(entry);
-  const selected = pending && selectedEntryIds.has(entry.id);
+  const canSelect = pending && state.activeTab === 'waiting';
+  const selected = canSelect && selectedEntryIds.has(entry.id);
   const amountLine = `1인당 ${formatAmount(calc.perPerson)}${calc.cashRatePerBillion > 0 ? ` / ${formatWon(calc.perPersonCash)}` : ''}`;
 
   return `
@@ -626,7 +628,7 @@ function entryCard(entry) {
         <span class="badge ${st.cls}">${st.label}</span>
       </div>
 
-      ${pending ? `
+      ${canSelect ? `
         <label class="entry-select">
           <input type="checkbox" data-action="select-entry" data-id="${entry.id}" ${selected ? 'checked' : ''} />
           <span>이번 묶음에 포함</span>
