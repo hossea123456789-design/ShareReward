@@ -1,12 +1,12 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '4.3.0';
+const APP_VERSION = '5.0.0';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 
 const statusMap = {
-  waiting: { label: '판매대기', cls: 'waiting' },
-  settling: { label: '정산중', cls: 'settling' },
+  waiting: { label: '정산대기', cls: 'waiting' },
+  settling: { label: '정산대기', cls: 'waiting' },
   done: { label: '완료', cls: 'done' },
   draft: { label: '드랍등록', cls: 'draft' },
 };
@@ -33,6 +33,8 @@ let remoteSaveTimer = null;
 let remoteStatus = 'local';
 let remoteUpdatedAt = localStorage.getItem('bossSplitLedger.remoteUpdatedAt.v1') || '';
 let suppressRemoteSave = false;
+let selectedEntryIds = new Set();
+let lastBatchShareText = sessionStorage.getItem('bossSplit.lastBatchShare.v5') || '';
 const clientId = getOrCreateClientId();
 
 const $ = (selector) => document.querySelector(selector);
@@ -333,7 +335,7 @@ function render() {
   const map = {
     home: renderHome,
     waiting: () => renderList('waiting'),
-    settling: () => renderList('settling'),
+    settling: () => renderList('waiting'),
     done: () => renderDone(),
     settings: renderSettings,
   };
@@ -346,63 +348,83 @@ function updateNav() {
   });
 }
 
+
 function renderHome() {
   const monthKey = new Date().toISOString().slice(0, 7);
   const monthEntries = state.entries.filter((e) => e.date.startsWith(monthKey));
-  const waiting = state.entries.filter((e) => e.status === 'waiting').length;
-  const settling = state.entries.filter((e) => e.status === 'settling').length;
+  const pending = state.entries.filter(isPendingEntry).length;
   const doneThisMonth = monthEntries.filter((e) => e.status === 'done').length;
-  const unpaidCount = state.entries
-    .filter((e) => e.status === 'settling')
-    .reduce((acc, e) => acc + e.members.filter((m) => !e.payments?.[m]).length, 0);
   const recent = [...state.entries].sort(sortRecent).slice(0, 5);
 
   app.innerHTML = `
     <section class="card">
       <div class="summary-grid">
-        <div class="stat"><span>판매대기</span><b>${waiting}</b></div>
-        <div class="stat"><span>정산중</span><b>${settling}</b></div>
+        <div class="stat"><span>정산대기</span><b>${pending}</b></div>
         <div class="stat"><span>이번 달 완료</span><b>${doneThisMonth}</b></div>
-        <div class="stat"><span>미지급 인원</span><b>${unpaidCount}</b></div>
-        <div class="stat"><span>저장 파티</span><b>${state.parties.length}</b></div>
         <div class="stat"><span>전체 기록</span><b>${state.entries.length}</b></div>
       </div>
-      <button class="big-action" data-action="new-entry">+ 새 정산 만들기</button>
+      <button class="big-action" data-action="new-entry">+ 정산 등록</button>
     </section>
 
     <div class="section-title">
       <h2>최근 정산</h2>
       <span class="sub">최신 5건</span>
     </div>
-    ${recent.length ? `<div class="list">${recent.map(entryCard).join('')}</div>` : emptyState('아직 정산 기록이 없습니다', '보스 처치 후 드랍이 나오면 새 정산을 만들어보세요.')}
+    ${recent.length ? `<div class="list">${recent.map(entryCard).join('')}</div>` : emptyState('아직 정산 기록이 없습니다', '판매된 아이템을 정산 등록하면 이곳에 표시됩니다.')}
   `;
 }
 
-function renderList(status) {
-  const title = status === 'waiting' ? '판매대기' : '정산중';
-  const desc = status === 'waiting'
-    ? '거래소 판매 전인 아이템만 모았습니다.'
-    : '판매는 끝났고 지급 체크가 남은 정산입니다.';
-  const list = state.entries.filter((e) => e.status === status).sort(sortRecent);
+
+function renderList() {
+  const list = state.entries.filter(isPendingEntry).sort(sortRecent);
+  const validIds = new Set(list.map((e) => e.id));
+  selectedEntryIds = new Set([...selectedEntryIds].filter((id) => validIds.has(id)));
+  const selected = getSelectedPendingEntries();
+  const summary = getBatchSelectionSummary(selected);
+
   app.innerHTML = `
     <section class="card">
-      <h2>${title}</h2>
-      <p class="item-sub">${desc}</p>
-      ${status === 'waiting' ? '<button class="big-action" data-action="new-entry">+ 판매대기 추가</button>' : ''}
+      <h2>정산대기</h2>
+      <p class="item-sub">정산을 연속으로 등록하면 방금 등록한 건들이 자동 선택됩니다. 필요한 건만 골라 한 번에 완료할 수 있습니다.</p>
+      <button class="big-action" data-action="new-entry">+ 정산 등록</button>
     </section>
-    <div class="section-title"><h2>${title} 목록</h2><span class="sub">${list.length}건</span></div>
-    ${list.length ? `<div class="list">${list.map(entryCard).join('')}</div>` : emptyState(`${title} 기록이 없습니다`, status === 'waiting' ? '판매할 드랍템이 생기면 새 정산을 추가하세요.' : '판매 완료 입력을 하면 이곳에 표시됩니다.')}
+
+    <section class="batch-toolbar">
+      <div class="batch-summary">
+        <b>선택 ${selected.length}건</b>
+        <span>${escapeHtml(summary)}</span>
+      </div>
+      <div class="batch-actions">
+        <button class="ghost small" data-action="select-all-pending" ${list.length ? '' : 'disabled'}>전체 선택</button>
+        <button class="ghost small" data-action="clear-selection" ${selected.length ? '' : 'disabled'}>선택 해제</button>
+        <button class="primary batch-complete" data-action="complete-selected" ${selected.length ? '' : 'disabled'}>선택 ${selected.length}건 정산 완료</button>
+      </div>
+    </section>
+
+    <div class="section-title"><h2>대기 목록</h2><span class="sub">${list.length}건</span></div>
+    ${list.length ? `<div class="list">${list.map(entryCard).join('')}</div>` : emptyState('정산대기 기록이 없습니다', '판매가 끝난 항목을 등록하면 바로 정산할 수 있습니다.')}
   `;
 }
+
 
 function renderDone() {
   const keyword = sessionStorage.getItem('bossSplit.search') || '';
   const done = state.entries.filter((e) => e.status === 'done');
   const filtered = filterEntries(done, keyword).sort(sortRecent);
   app.innerHTML = `
+    ${lastBatchShareText ? `
+      <section class="card share-result">
+        <div class="section-title" style="margin-top:0">
+          <h2>방금 만든 통합 공유문</h2>
+          <button class="primary small" data-action="copy-batch-share">복사</button>
+        </div>
+        <div class="copy-box share-preview">${escapeHtml(lastBatchShareText)}</div>
+      </section>
+    ` : ''}
+
     <section class="card">
       <h2>정산완료</h2>
-      <p class="item-sub">보스명, 아이템명, 참여자명으로 검색할 수 있습니다.</p>
+      <p class="item-sub">완료된 정산은 완료 시점의 억당 시세를 보존합니다.</p>
     </section>
     <div class="section-title"><h2>완료 기록</h2><span class="sub">${filtered.length}/${done.length}건</span></div>
     <div class="search-row">
@@ -417,6 +439,7 @@ function renderDone() {
   });
 }
 
+
 function renderDetail(id) {
   const entry = findEntry(id);
   if (!entry) {
@@ -424,9 +447,11 @@ function renderDetail(id) {
     render();
     return;
   }
-  const sale = entry.sale;
-  const st = statusMap[entry.status] || statusMap.waiting;
-  const copyText = buildShareText(entry);
+  const calc = calculateEntry(entry);
+  const pending = isPendingEntry(entry);
+  const st = pending ? statusMap.waiting : statusMap.done;
+  const rateLabel = entry.status === 'done' ? '완료 시세' : '현재 시세';
+
   app.innerHTML = `
     <section class="item-card">
       <div class="item-head">
@@ -436,57 +461,26 @@ function renderDetail(id) {
         </div>
         <span class="badge ${st.cls}">${st.label}</span>
       </div>
+
       <div class="kv-grid">
-        <div class="kv"><span>아이템</span><b>${escapeHtml(entry.item)}</b></div>
-        <div class="kv"><span>예상가</span><b>${formatAmount(entry.expectedPrice)}</b></div>
-        <div class="kv"><span>참여자</span><b>${entry.members.map(escapeHtml).join(', ') || '-'}</b></div>
-        <div class="kv"><span>상태</span><b>${st.label}</b></div>
+        <div class="kv"><span>정산 항목</span><b>${escapeHtml(entry.item)}</b></div>
+        <div class="kv"><span>판매가</span><b>${formatAmount(calc.salePrice)}</b></div>
+        <div class="kv"><span>1인 정산</span><b>${formatAmount(calc.perPerson)}${calc.cashRatePerBillion > 0 ? ` / ${formatWon(calc.perPersonCash)}` : ''}</b></div>
+        <div class="kv"><span>${rateLabel}</span><b>${calc.cashRatePerBillion > 0 ? `억당 ${formatWon(calc.cashRatePerBillion)}` : '-'}</b></div>
       </div>
-      ${entry.memo ? `<div class="detail-block"><h3>메모</h3><p class="item-sub">${escapeHtml(entry.memo)}</p></div>` : ''}
+
+      <div class="detail-block">
+        <h3>참여자</h3>
+        <p class="item-sub">${entry.members.map(escapeHtml).join(', ') || '-'}</p>
+      </div>
+
       <div class="item-actions">
         <button class="ghost" data-action="back-list">목록으로</button>
-        <button class="secondary" data-action="edit-entry" data-id="${entry.id}">수정</button>
-        ${entry.status === 'waiting' ? `<button class="primary" data-action="open-sale" data-id="${entry.id}">판매 완료 입력</button>` : ''}
+        ${pending ? `<button class="secondary" data-action="edit-entry" data-id="${entry.id}">수정</button>` : ''}
+        <button class="secondary" data-action="copy-share" data-id="${entry.id}">공유문구 복사</button>
         <button class="danger" data-action="delete-entry" data-id="${entry.id}">삭제</button>
       </div>
     </section>
-
-    ${sale ? renderSaleSummary(entry) : ''}
-
-    ${sale ? `
-      <section class="card detail-block">
-        <div class="section-title" style="margin-top:0">
-          <h2>지급 현황</h2>
-          <span class="sub">${paidCount(entry)}/${entry.members.length}명 완료</span>
-        </div>
-        <div class="payment-list">
-          ${entry.members.map((member) => {
-            const isSeller = member === sale.sellerName;
-            const cashLabel = sale.cashRatePerBillion > 0 ? ` · ${formatWon(sale.perPersonCash)}` : '';
-            return `
-            <div class="payment-row ${isSeller ? 'seller-row' : ''}">
-              <label>
-                <input type="checkbox" data-action="toggle-payment" data-id="${entry.id}" data-member="${escapeHtml(member)}" ${entry.payments?.[member] || isSeller ? 'checked' : ''} ${isSeller ? 'disabled' : ''} />
-                ${escapeHtml(member)}${isSeller ? ' <em>판매자</em>' : ''}
-              </label>
-              <span class="payment-amount">${formatAmount(sale.perPerson)}${cashLabel}</span>
-            </div>`;
-          }).join('')}
-        </div>
-        <div class="item-actions">
-          <button class="secondary" data-action="all-paid" data-id="${entry.id}">전체 지급 완료</button>
-          <button class="ghost" data-action="reopen-settling" data-id="${entry.id}">정산중으로 되돌리기</button>
-        </div>
-      </section>
-
-      <section class="card detail-block">
-        <div class="section-title" style="margin-top:0">
-          <h2>카톡 공유 문구</h2>
-          <button class="primary small" data-action="copy-share" data-id="${entry.id}">복사</button>
-        </div>
-        <div class="copy-box">${escapeHtml(copyText)}</div>
-      </section>
-    ` : ''}
   `;
 }
 
@@ -546,8 +540,9 @@ function renderSettings() {
         </select>
       </label>
       <label class="field">
-        <span>기본 억당 현금가, 원</span>
+        <span>현재 억당 시세, 원</span>
         <input id="settingCashRatePerBillion" type="number" step="1" min="0" value="${state.settings.cashRatePerBillion || 0}" placeholder="예: 2500" />
+        <span class="item-sub">정산대기 건은 이 시세를 즉시 반영하고, 완료 시점에 시세가 고정됩니다.</span>
       </label>
       <div class="item-actions">
         <button class="primary" data-action="save-rules">정산 규칙 저장</button>
@@ -614,13 +609,17 @@ function renderSettings() {
   $('#importFile')?.addEventListener('change', handleImportFile);
 }
 
+
 function entryCard(entry) {
-  const st = statusMap[entry.status] || statusMap.waiting;
-  const saleLine = entry.sale
-    ? `판매가 ${formatAmount(entry.sale.salePrice)} · 1인당 ${formatAmount(entry.sale.perPerson)}${entry.sale.cashRatePerBillion > 0 ? ` / ${formatWon(entry.sale.perPersonCash)}` : ''}`
-    : `예상가 ${formatAmount(entry.expectedPrice)}`;
+  const pending = isPendingEntry(entry);
+  const st = pending ? statusMap.waiting : statusMap.done;
+  const calc = calculateEntry(entry);
+  const canSelect = pending && state.activeTab === 'waiting';
+  const selected = canSelect && selectedEntryIds.has(entry.id);
+  const amountLine = `1인당 ${formatAmount(calc.perPerson)}${calc.cashRatePerBillion > 0 ? ` / ${formatWon(calc.perPersonCash)}` : ''}`;
+
   return `
-    <article class="item-card" data-id="${entry.id}">
+    <article class="item-card ${selected ? 'selected' : ''}" data-id="${entry.id}">
       <div class="item-head">
         <div>
           <div class="item-title">${escapeHtml(entry.boss)}</div>
@@ -628,14 +627,22 @@ function entryCard(entry) {
         </div>
         <span class="badge ${st.cls}">${st.label}</span>
       </div>
+
+      ${canSelect ? `
+        <label class="entry-select">
+          <input type="checkbox" data-action="select-entry" data-id="${entry.id}" ${selected ? 'checked' : ''} />
+          <span>이번 묶음에 포함</span>
+        </label>
+      ` : ''}
+
       <div class="item-meta">
-        <span class="badge draft">${saleLine}</span>
-        ${entry.status === 'settling' ? `<span class="badge problem">미지급 ${entry.members.length - paidCount(entry)}명</span>` : ''}
+        <span class="badge draft">판매가 ${formatAmount(calc.salePrice)} · ${amountLine}</span>
       </div>
+
       <div class="item-actions">
         <button class="ghost" data-action="detail" data-id="${entry.id}">상세</button>
-        ${entry.status === 'waiting' ? `<button class="primary" data-action="open-sale" data-id="${entry.id}">판매 완료</button>` : ''}
-        ${entry.sale ? `<button class="secondary" data-action="copy-share" data-id="${entry.id}">공유문구 복사</button>` : ''}
+        ${pending ? `<button class="secondary" data-action="edit-entry" data-id="${entry.id}">수정</button>` : ''}
+        ${!pending ? `<button class="secondary" data-action="copy-share" data-id="${entry.id}">공유문구 복사</button>` : ''}
       </div>
     </article>
   `;
@@ -644,6 +651,7 @@ function entryCard(entry) {
 function emptyState(title, desc) {
   return `<div class="empty"><b>${title}</b>${desc}</div>`;
 }
+
 
 function handleAppClick(event) {
   const target = event.target.closest('[data-action]');
@@ -657,10 +665,11 @@ function handleAppClick(event) {
     'back-list': () => { state.detailId = null; saveState({ localOnly: true }); render(); },
     'edit-entry': () => openEntryDialog(findEntry(id)),
     'delete-entry': () => deleteEntry(id),
-    'open-sale': () => openSaleDialog(id),
     'copy-share': () => copyShare(id),
-    'all-paid': () => markAllPaid(id),
-    'reopen-settling': () => reopenSettling(id),
+    'select-all-pending': selectAllPending,
+    'clear-selection': clearPendingSelection,
+    'complete-selected': completeSelectedBatch,
+    'copy-batch-share': copyBatchShare,
     'clear-search': () => { sessionStorage.removeItem('bossSplit.search'); renderDone(); },
     'save-rules': saveRules,
     'new-party': () => openPartyDialog(),
@@ -679,14 +688,22 @@ function handleAppClick(event) {
   actions[action]?.();
 }
 
+
 function handleAppChange(event) {
   const target = event.target;
+  if (target.matches('[data-action="select-entry"]')) {
+    if (target.checked) selectedEntryIds.add(target.dataset.id);
+    else selectedEntryIds.delete(target.dataset.id);
+    renderList();
+    return;
+  }
+
   if (target.matches('[data-action="toggle-payment"]')) {
     const entry = findEntry(target.dataset.id);
     if (!entry) return;
     entry.payments = entry.payments || {};
     entry.payments[target.dataset.member] = target.checked;
-    entry.status = isAllPaid(entry) ? 'done' : 'settling';
+    entry.status = isAllPaid(entry) ? 'done' : 'waiting';
     saveState();
     render();
   }
@@ -721,15 +738,16 @@ function openDetail(id) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
+
 function openEntryDialog(entry = null) {
   populateEntrySelects(entry);
-  $('#entryDialogTitle').textContent = entry ? '정산 수정' : '새 정산 만들기';
+  $('#entryDialogTitle').textContent = entry ? '정산 수정' : '정산 등록';
   $('#entryId').value = entry?.id || '';
   $('#entryDate').value = entry?.date || new Date().toISOString().slice(0, 10);
   $('#entryBoss').value = entry?.boss || state.settings.bosses[0] || '';
   $('#entryParty').value = entry ? '__custom__' : (state.parties[0]?.id || '__custom__');
   $('#entryItem').value = entry?.item || '';
-  $('#entryExpectedPrice').value = entry?.expectedPrice || '';
+  $('#entryExpectedPrice').value = entry?.sale?.salePrice ?? entry?.expectedPrice ?? '';
   $('#entryMemo').value = entry?.memo || '';
   $('#entryNewMember').value = '';
   if (entry) renderEntryMembers(entry.members, entry.members);
@@ -784,6 +802,7 @@ function getCheckedEntryMembers() {
   return [...$('#entryMembers').querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.value).filter(Boolean);
 }
 
+
 function handleEntrySubmit(event) {
   event.preventDefault();
   const id = $('#entryId').value || uid();
@@ -793,7 +812,26 @@ function handleEntrySubmit(event) {
     showToast('참여자를 1명 이상 선택하세요.');
     return;
   }
+
+  const salePrice = numberOrZero($('#entryExpectedPrice').value);
+  if (salePrice <= 0) {
+    showToast('판매가를 입력하세요.');
+    return;
+  }
+
   const party = findParty($('#entryParty').value);
+  const now = new Date().toISOString();
+  const saleBasis = {
+    ...(existing?.sale || {}),
+    salePrice,
+    feeMode: existing?.sale?.feeMode || state.settings.feeMode,
+    feeValue: existing?.sale?.feeValue ?? state.settings.feeValue,
+    excludeAmount: numberOrZero(existing?.sale?.excludeAmount),
+    roundingMode: existing?.sale?.roundingMode || state.settings.roundingMode,
+    sellerName: existing?.sale?.sellerName || members[0] || '',
+    soldAt: existing?.sale?.soldAt || now,
+  };
+
   const payload = {
     id,
     date: normalizeDateValue($('#entryDate').value) || new Date().toISOString().slice(0, 10),
@@ -801,22 +839,26 @@ function handleEntrySubmit(event) {
     partyName: party?.name || '직접 선택',
     members,
     item: $('#entryItem').value.trim(),
-    expectedPrice: numberOrZero($('#entryExpectedPrice').value),
+    expectedPrice: salePrice,
     memo: $('#entryMemo').value.trim(),
-    status: existing?.status || 'waiting',
-    createdAt: existing?.createdAt || new Date().toISOString(),
-    sale: existing?.sale || null,
+    status: existing?.status === 'done' ? 'done' : 'waiting',
+    createdAt: existing?.createdAt || now,
+    sale: saleBasis,
     payments: prunePayments(existing?.payments || {}, members),
   };
+
   if (existing) {
     Object.assign(existing, payload);
   } else {
     state.entries.unshift(payload);
   }
+
+  if (payload.status !== 'done') selectedEntryIds.add(id);
+  state.activeTab = 'waiting';
+  state.detailId = null;
   saveState();
   $('#entryDialog').close();
-  state.detailId = id;
-  showToast(existing ? '정산을 수정했습니다.' : '새 정산을 만들었습니다.');
+  showToast(existing ? '정산을 수정했습니다.' : '정산을 등록하고 자동 선택했습니다.');
   render();
 }
 
@@ -963,46 +1005,179 @@ function fallbackCopy(text) {
   area.remove();
 }
 
+
 function buildShareText(entry) {
-  const lines = [];
-  const line = '━━━━━━━━━━━━';
-  lines.push(`[${entry.boss} 정산]`);
-  lines.push(line);
-  lines.push(`${formatDate(entry.date)} · ${entry.item}`);
-  lines.push(`참여: ${entry.members.join(', ')}`);
-
-  if (!entry.sale) {
-    lines.push(line);
-    lines.push(`예상가: ${formatAmount(entry.expectedPrice)}`);
-    lines.push('상태: 판매대기');
-    return lines.join('\n');
-  }
-
-  const sale = entry.sale;
-  const paid = entry.members.filter((m) => entry.payments?.[m] && m !== sale.sellerName);
-  const unpaid = entry.members.filter((m) => !entry.payments?.[m] && m !== sale.sellerName);
-  const feePart = sale.excludeAmount > 0
-    ? `${formatAmount(sale.salePrice)} - ${formatAmount(sale.feeAmount)} - ${formatAmount(sale.excludeAmount)} = ${formatAmount(sale.netAmount)}`
-    : `${formatAmount(sale.salePrice)} - ${formatAmount(sale.feeAmount)} = ${formatAmount(sale.netAmount)}`;
-
-  lines.push(line);
-  lines.push(`판매: ${feePart}`);
-
-  if (sale.cashRatePerBillion > 0) {
-    lines.push(`1인: ${formatAmount(sale.perPerson)} / ${formatWon(sale.perPersonCash)}`);
-    lines.push(`시세: 억당 ${formatWon(sale.cashRatePerBillion)}`);
-    lines.push(line);
-    lines.push(`판매자: ${sale.sellerName || '-'}`);
-    lines.push(`전달예정: ${formatWon(sale.transferCash)}`);
-  } else {
-    lines.push(`1인: ${formatAmount(sale.perPerson)}`);
-    lines.push(line);
-  }
-
-  lines.push(`완료: ${paid.length ? paid.join(', ') : '-'}`);
-  lines.push(`미지급: ${unpaid.length ? unpaid.join(', ') : '-'}`);
-  return lines.join('\n');
+  return buildBatchShareText([entry]);
 }
+
+
+function isPendingEntry(entry) {
+  return Boolean(entry) && entry.status !== 'done';
+}
+
+function calculateEntry(entry) {
+  const sale = entry?.sale || {};
+  const salePrice = numberOrZero(sale.salePrice ?? entry?.expectedPrice);
+  const feeMode = sale.feeMode || state.settings.feeMode;
+  const feeValue = sale.feeValue ?? state.settings.feeValue;
+  const excludeAmount = numberOrZero(sale.excludeAmount);
+  const roundingMode = sale.roundingMode || state.settings.roundingMode;
+  const feeAmount = feeMode === 'percent' ? salePrice * (numberOrZero(feeValue) / 100) : numberOrZero(feeValue);
+  const netAmount = Math.max(0, salePrice - feeAmount - excludeAmount);
+  const memberCount = entry?.members?.length || 0;
+  const rawPerPerson = memberCount ? netAmount / memberCount : 0;
+  const perPerson = applyRounding(rawPerPerson, roundingMode);
+
+  const frozenRate = sale.completedCashRate ?? sale.cashRatePerBillion;
+  const cashRatePerBillion = entry?.status === 'done'
+    ? numberOrZero(frozenRate ?? state.settings.cashRatePerBillion)
+    : numberOrZero(state.settings.cashRatePerBillion);
+
+  const totalCash = roundWon(netAmount * cashRatePerBillion);
+  const perPersonCash = roundWon(perPerson * cashRatePerBillion);
+  return {
+    salePrice,
+    feeMode,
+    feeValue: numberOrZero(feeValue),
+    feeAmount,
+    excludeAmount,
+    netAmount,
+    perPerson,
+    roundingMode,
+    cashRatePerBillion,
+    totalCash,
+    perPersonCash,
+  };
+}
+
+function getSelectedPendingEntries() {
+  return state.entries.filter((entry) => isPendingEntry(entry) && selectedEntryIds.has(entry.id));
+}
+
+function getBatchGroups(entries) {
+  const map = new Map();
+  entries.forEach((entry) => {
+    const members = Array.isArray(entry.members) ? entry.members : [];
+    const key = `${entry.date}::${members.join('\u0001')}`;
+    if (!map.has(key)) map.set(key, { date: entry.date, members, entries: [] });
+    map.get(key).entries.push(entry);
+  });
+  return [...map.values()];
+}
+
+function getBatchSelectionSummary(entries) {
+  if (!entries.length) return '정산을 등록하면 자동으로 선택됩니다.';
+  const groups = getBatchGroups(entries);
+  if (groups.length !== 1) return `정산 그룹 ${groups.length}개 · 완료 후 한 문장으로 통합됩니다.`;
+
+  let totalMeso = 0;
+  let totalCash = 0;
+  entries.forEach((entry) => {
+    const calc = calculateEntry(entry);
+    totalMeso += calc.perPerson;
+    totalCash += calc.perPersonCash;
+  });
+  const cash = state.settings.cashRatePerBillion > 0 ? ` / ${formatWon(totalCash)}` : '';
+  return `1인 총 ${formatAmount(totalMeso)}${cash}`;
+}
+
+function selectAllPending() {
+  state.entries.filter(isPendingEntry).forEach((entry) => selectedEntryIds.add(entry.id));
+  renderList();
+}
+
+function clearPendingSelection() {
+  selectedEntryIds.clear();
+  renderList();
+}
+
+function completeSelectedBatch() {
+  const entries = getSelectedPendingEntries();
+  if (!entries.length) {
+    showToast('완료할 정산을 선택하세요.');
+    return;
+  }
+
+  const invalid = entries.find((entry) => calculateEntry(entry).salePrice <= 0);
+  if (invalid) {
+    showToast(`'${invalid.item}' 판매가를 확인하세요.`);
+    return;
+  }
+
+  const completedAt = new Date().toISOString();
+  entries.forEach((entry) => {
+    const calc = calculateEntry(entry);
+    entry.sale = {
+      ...(entry.sale || {}),
+      ...calc,
+      cashRatePerBillion: calc.cashRatePerBillion,
+      completedCashRate: calc.cashRatePerBillion,
+      completedAt,
+    };
+    entry.status = 'done';
+    entry.payments = Object.fromEntries((entry.members || []).map((member) => [member, true]));
+  });
+
+  lastBatchShareText = buildBatchShareText(entries);
+  sessionStorage.setItem('bossSplit.lastBatchShare.v5', lastBatchShareText);
+  selectedEntryIds.clear();
+  state.activeTab = 'done';
+  state.detailId = null;
+  saveState();
+  showToast(`${entries.length}건을 정산 완료했습니다. 통합 공유문을 만들었습니다.`);
+  render();
+}
+
+async function copyBatchShare() {
+  if (!lastBatchShareText) {
+    showToast('복사할 통합 공유문이 없습니다.');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(lastBatchShareText);
+    showToast('통합 공유문을 복사했습니다.');
+  } catch {
+    fallbackCopy(lastBatchShareText);
+    showToast('통합 공유문을 복사했습니다.');
+  }
+}
+
+function buildBatchShareText(entries) {
+  const valid = (entries || []).filter(Boolean);
+  if (!valid.length) return '';
+
+  const groups = getBatchGroups(valid);
+  return groups.map((group) => {
+    const lines = [
+      `정산 날짜: ${formatDate(group.date)}`,
+      `정산 인원: ${group.members.length}인`,
+      '',
+    ];
+
+    let totalMeso = 0;
+    let totalCash = 0;
+    let hasCash = false;
+
+    group.entries.forEach((entry, index) => {
+      const calc = calculateEntry(entry);
+      totalMeso += calc.perPerson;
+      totalCash += calc.perPersonCash;
+      hasCash = hasCash || calc.cashRatePerBillion > 0;
+
+      lines.push(`${entry.boss} · ${entry.item}`);
+      lines.push(`정산 금액: ${formatAmount(calc.perPerson)}${calc.cashRatePerBillion > 0 ? ` / ${formatWon(calc.perPersonCash)}` : ''}`);
+      if (index < group.entries.length - 1) lines.push('');
+    });
+
+    if (group.entries.length > 1) {
+      lines.push('');
+      lines.push(`총합: ${formatAmount(totalMeso)}${hasCash ? ` / ${formatWon(totalCash)}` : ''}`);
+    }
+
+    return lines.join('\n');
+  }).join('\n\n');
+}
+
 
 function saveRules() {
   state.settings.feeMode = $('#settingFeeMode').value;
@@ -1010,7 +1185,8 @@ function saveRules() {
   state.settings.roundingMode = $('#settingRoundingMode').value;
   state.settings.cashRatePerBillion = numberOrZero($('#settingCashRatePerBillion').value);
   saveState();
-  showToast('정산 규칙을 저장했습니다.');
+  showToast('정산 규칙을 저장했습니다. 정산대기 금액에 최신 시세가 즉시 반영됩니다.');
+  renderSettings();
 }
 
 function openPartyDialog(party = null) {
@@ -1099,58 +1275,42 @@ function handleImportFile(event) {
   event.target.value = '';
 }
 
+
 function seedDemoData() {
   if (!confirm('데모 데이터를 추가할까요? 기존 데이터는 유지됩니다.')) return;
   const demoParty = state.parties[0] || { name: '기본 파티', members: ['하람', '예원', '민수', '준호'] };
-  const demo1 = {
+  const now = new Date().toISOString();
+  const makeDemo = (date, boss, item, price) => ({
     id: uid(),
-    date: new Date().toISOString().slice(0, 10),
-    boss: '하드 스우',
+    date,
+    boss,
     partyName: demoParty.name,
-    members: demoParty.members,
-    item: '몽환의 벨트',
-    expectedPrice: 120,
-    memo: '거래소 판매 후 n빵 예정',
-    status: 'waiting',
-    createdAt: new Date().toISOString(),
-    sale: null,
-    payments: {},
-  };
-  const demoCashRate = state.settings.cashRatePerBillion || 2500;
-  const demoPerPerson = applyRounding(83.6 / demoParty.members.length, state.settings.roundingMode);
-  const demoSeller = demoParty.members[0] || '하람';
-  const demo2 = {
-    id: uid(),
-    date: offsetDate(-1),
-    boss: '카오스 더스크',
-    partyName: demoParty.name,
-    members: demoParty.members,
-    item: '거대한 공포',
-    expectedPrice: 88,
+    members: [...demoParty.members],
+    item,
+    expectedPrice: price,
     memo: '',
-    status: 'settling',
-    createdAt: new Date().toISOString(),
+    status: 'waiting',
+    createdAt: now,
     sale: {
-      salePrice: 88,
-      feeMode: 'percent',
-      feeValue: 5,
-      feeAmount: 4.4,
+      salePrice: price,
+      feeMode: state.settings.feeMode,
+      feeValue: state.settings.feeValue,
       excludeAmount: 0,
-      netAmount: 83.6,
-      perPerson: demoPerPerson,
       roundingMode: state.settings.roundingMode,
-      cashRatePerBillion: demoCashRate,
-      sellerName: demoSeller,
-      totalCash: roundWon(83.6 * demoCashRate),
-      perPersonCash: roundWon(demoPerPerson * demoCashRate),
-      transferCash: roundWon(demoPerPerson * demoCashRate * Math.max(0, demoParty.members.length - 1)),
-      soldAt: new Date().toISOString(),
+      sellerName: demoParty.members[0] || '',
+      soldAt: now,
     },
-    payments: Object.fromEntries(demoParty.members.map((member, idx) => [member, idx === 0])),
-  };
+    payments: {},
+  });
+
+  const demo1 = makeDemo(new Date().toISOString().slice(0, 10), '하드 스우', '몽환의 벨트', 120);
+  const demo2 = makeDemo(offsetDate(-1), '카오스 더스크', '거대한 공포', 88);
   state.entries.unshift(demo1, demo2);
+  selectedEntryIds.add(demo1.id);
+  selectedEntryIds.add(demo2.id);
+  state.activeTab = 'waiting';
   saveState();
-  showToast('데모 데이터를 추가했습니다.');
+  showToast('데모 정산 2건을 추가하고 선택했습니다.');
   render();
 }
 
