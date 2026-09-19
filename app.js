@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.0.0';
+const APP_VERSION = '5.1.0';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 
 const statusMap = {
@@ -53,37 +53,64 @@ function init() {
   loadRemoteOnStart();
 }
 
-function bindGlobalEvents() {
-  $('#quickAddBtn').addEventListener('click', () => openEntryDialog());
 
-  document.querySelectorAll('.nav-item').forEach((btn) => {
-    btn.addEventListener('click', () => {
+function bindGlobalEvents() {
+  $('#quickAddBtn').addEventListener('click', function () { openBulkEntryDialog(); });
+  document.querySelectorAll('.nav-item').forEach(function (btn) {
+    btn.addEventListener('click', function () {
       state.activeTab = btn.dataset.tab;
       state.detailId = null;
       saveState({ localOnly: true });
       render();
     });
   });
+  document.querySelectorAll('[data-close-dialog]').forEach(function (btn) {
+    btn.addEventListener('click', function () { $('#entryDialog').close(); });
+  });
+  document.querySelectorAll('[data-close-sale-dialog]').forEach(function (btn) {
+    btn.addEventListener('click', function () { $('#saleDialog').close(); });
+  });
+  document.querySelectorAll('[data-close-party-dialog]').forEach(function (btn) {
+    btn.addEventListener('click', function () { $('#partyDialog').close(); });
+  });
 
-  document.querySelectorAll('[data-close-dialog]').forEach((btn) => btn.addEventListener('click', () => $('#entryDialog').close()));
-  document.querySelectorAll('[data-close-sale-dialog]').forEach((btn) => btn.addEventListener('click', () => $('#saleDialog').close()));
-  document.querySelectorAll('[data-close-party-dialog]').forEach((btn) => btn.addEventListener('click', () => $('#partyDialog').close()));
-
-  $('#entryParty').addEventListener('change', refreshEntryMembersFromParty);
-  $('#addTempMemberBtn').addEventListener('click', addTempMemberToEntry);
-  $('#entryForm').addEventListener('submit', handleEntrySubmit);
+  $('#entryForm').addEventListener('submit', handleBulkEntrySubmit);
+  $('#addEntryRowBtn').addEventListener('click', addBulkEntryRowFromPrevious);
+  $('#entryRows').addEventListener('click', function (event) {
+    const button = event.target.closest('[data-entry-row-action]');
+    if (!button) return;
+    const row = button.closest('tr[data-entry-row]');
+    if (!row) return;
+    if (button.dataset.entryRowAction === 'remove') {
+      const rows = Array.from($('#entryRows').querySelectorAll('tr[data-entry-row]'));
+      if (rows.length <= 1) {
+        row.querySelector('[data-field="item"]').value = '';
+        row.querySelector('[data-field="salePrice"]').value = '';
+      } else {
+        row.remove();
+      }
+      updateBulkEntrySubmitLabel();
+    }
+  });
+  $('#entryRows').addEventListener('change', function (event) {
+    const target = event.target;
+    if (target.matches('[data-field="partyId"]')) {
+      syncBulkEntryMembersFromParty(target.closest('tr[data-entry-row]'));
+    }
+    updateBulkEntrySubmitLabel();
+  });
+  $('#entryRows').addEventListener('input', updateBulkEntrySubmitLabel);
 
   $('#saleForm').addEventListener('submit', handleSaleSubmit);
-  ['salePrice', 'feeMode', 'feeValue', 'excludeAmount', 'cashRatePerBillion', 'sellerName', 'roundingMode'].forEach((id) => {
-    $(`#${id}`).addEventListener('input', renderCalcPreview);
-    $(`#${id}`).addEventListener('change', renderCalcPreview);
+  ['salePrice', 'feeMode', 'feeValue', 'excludeAmount', 'cashRatePerBillion', 'sellerName', 'roundingMode'].forEach(function (id) {
+    const el = document.getElementById(id);
+    el.addEventListener('input', renderCalcPreview);
+    el.addEventListener('change', renderCalcPreview);
   });
-  $('#feeMode').addEventListener('change', () => {
+  $('#feeMode').addEventListener('change', function () {
     $('#feeValueLabel').textContent = $('#feeMode').value === 'percent' ? '수수료 %' : '수수료 금액, 억 단위';
   });
-
   $('#partyForm').addEventListener('submit', handlePartySubmit);
-
   app.addEventListener('click', handleAppClick);
   app.addEventListener('change', handleAppChange);
 }
@@ -660,10 +687,10 @@ function handleAppClick(event) {
   const id = target.dataset.id;
 
   const actions = {
-    'new-entry': () => openEntryDialog(),
+    'new-entry': () => openBulkEntryDialog(),
     detail: () => openDetail(id),
     'back-list': () => { state.detailId = null; saveState({ localOnly: true }); render(); },
-    'edit-entry': () => openEntryDialog(findEntry(id)),
+    'edit-entry': () => openBulkEntryDialog(findEntry(id)),
     'delete-entry': () => deleteEntry(id),
     'copy-share': () => copyShare(id),
     'select-all-pending': selectAllPending,
@@ -862,6 +889,166 @@ function handleEntrySubmit(event) {
   render();
 }
 
+
+function openBulkEntryDialog(entry = null) {
+  const tbody = $('#entryRows');
+  tbody.innerHTML = '';
+  $('#entryId').value = entry ? entry.id : '';
+  $('#entryDialogTitle').textContent = entry ? '정산 수정' : '정산 일괄 등록';
+  $('#addEntryRowBtn').hidden = Boolean(entry);
+  appendBulkEntryRow(makeBulkEntryRowData(entry));
+  updateBulkEntrySubmitLabel();
+  $('#entryDialog').showModal();
+}
+function makeBulkEntryRowData(entry = null) {
+  const firstParty = state.parties[0] || null;
+  const matchedParty = entry ? (state.parties.find(function (party) { return party.name === entry.partyName; }) || null) : firstParty;
+  return {
+    date: normalizeDateValue(entry && entry.date) || new Date().toISOString().slice(0, 10),
+    boss: (entry && entry.boss) || (state.settings.bosses && state.settings.bosses[0]) || '',
+    partyId: (matchedParty && matchedParty.id) || '__custom__',
+    members: entry && entry.members && entry.members.length ? entry.members.slice() : ((matchedParty && matchedParty.members) || []).slice(),
+    item: (entry && entry.item) || '',
+    salePrice: entry ? ((entry.sale && entry.sale.salePrice) != null ? entry.sale.salePrice : entry.expectedPrice) : '',
+  };
+}
+function appendBulkEntryRow(data) {
+  data = data || {};
+  const tbody = $('#entryRows');
+  const normalized = {
+    date: normalizeDateValue(data.date) || new Date().toISOString().slice(0, 10),
+    boss: data.boss || (state.settings.bosses && state.settings.bosses[0]) || '',
+    partyId: data.partyId || (state.parties[0] && state.parties[0].id) || '__custom__',
+    members: Array.isArray(data.members) ? data.members : [],
+    item: data.item || '',
+    salePrice: data.salePrice != null ? data.salePrice : '',
+  };
+  const bosses = Array.from(new Set([].concat(state.settings.bosses || [], normalized.boss).filter(Boolean)));
+  const bossOptions = bosses.map(function (boss) {
+    return '<option value="' + escapeHtml(boss) + '"' + (boss === normalized.boss ? ' selected' : '') + '>' + escapeHtml(boss) + '</option>';
+  }).join('');
+  const partyOptions = state.parties.map(function (party) {
+    return '<option value="' + escapeHtml(party.id) + '"' + (party.id === normalized.partyId ? ' selected' : '') + '>' + escapeHtml(party.name) + '</option>';
+  }).join('') + '<option value="__custom__"' + (normalized.partyId === '__custom__' ? ' selected' : '') + '>직접 입력</option>';
+  const row = document.createElement('tr');
+  row.dataset.entryRow = '1';
+  row.innerHTML =
+    '<td class="entry-col-date"><input data-field="date" type="date" value="' + escapeHtml(normalized.date) + '" aria-label="정산 날짜" /></td>' +
+    '<td class="entry-col-boss"><select data-field="boss" aria-label="보스">' + bossOptions + '</select></td>' +
+    '<td class="entry-col-party"><select data-field="partyId" aria-label="파티">' + partyOptions + '</select></td>' +
+    '<td class="entry-col-members"><input data-field="members" type="text" value="' + escapeHtml(normalized.members.join(', ')) + '" placeholder="하람, 영권" aria-label="참여자" /></td>' +
+    '<td class="entry-col-item"><input data-field="item" type="text" value="' + escapeHtml(normalized.item) + '" placeholder="예: 생명의 연마석" aria-label="아이템" /></td>' +
+    '<td class="entry-col-price"><input data-field="salePrice" type="number" step="0.001" min="0" value="' + escapeHtml(normalized.salePrice) + '" placeholder="예: 10" aria-label="판매가" /></td>' +
+    '<td class="entry-col-action"><button type="button" class="danger entry-row-remove" data-entry-row-action="remove" aria-label="행 삭제">×</button></td>';
+  tbody.appendChild(row);
+  updateBulkEntrySubmitLabel();
+}
+function addBulkEntryRowFromPrevious() {
+  const rows = Array.from($('#entryRows').querySelectorAll('tr[data-entry-row]'));
+  const previous = rows.length ? readBulkEntryRow(rows[rows.length - 1]) : makeBulkEntryRowData();
+  appendBulkEntryRow({date:previous.date,boss:previous.boss,partyId:previous.partyId,members:previous.members,item:'',salePrice:''});
+  const lastRow = $('#entryRows').lastElementChild;
+  const itemInput = lastRow && lastRow.querySelector('[data-field="item"]');
+  if (itemInput) itemInput.focus();
+}
+function syncBulkEntryMembersFromParty(row) {
+  if (!row) return;
+  const partySelect = row.querySelector('[data-field="partyId"]');
+  const partyId = partySelect ? partySelect.value : '';
+  if (!partyId || partyId === '__custom__') return;
+  const party = findParty(partyId);
+  if (!party) return;
+  const membersInput = row.querySelector('[data-field="members"]');
+  if (membersInput) membersInput.value = party.members.join(', ');
+}
+function readBulkEntryRow(row) {
+  const salePriceInput = row.querySelector('[data-field="salePrice"]');
+  return {
+    date:(row.querySelector('[data-field="date"]')||{}).value||'',
+    boss:(row.querySelector('[data-field="boss"]')||{}).value||'',
+    partyId:(row.querySelector('[data-field="partyId"]')||{}).value||'__custom__',
+    members:splitMembers(((row.querySelector('[data-field="members"]')||{}).value||'')),
+    item:(((row.querySelector('[data-field="item"]')||{}).value||'')).trim(),
+    salePriceRaw:(((salePriceInput||{}).value||'')).trim(),
+    salePrice:numberOrZero((salePriceInput||{}).value),
+  };
+}
+function getActiveBulkEntryRows() {
+  return Array.from($('#entryRows').querySelectorAll('tr[data-entry-row]')).map(readBulkEntryRow).filter(function (row) { return row.item || row.salePriceRaw; });
+}
+function updateBulkEntrySubmitLabel() {
+  const tbody=$('#entryRows');
+  const rowCount=tbody?tbody.querySelectorAll('tr[data-entry-row]').length:0;
+  const activeCount=tbody?getActiveBulkEntryRows().length:0;
+  const editing=Boolean($('#entryId')&&$('#entryId').value);
+  if ($('#entryRowCount')) $('#entryRowCount').textContent=editing?'1건 수정':(Math.max(1,rowCount)+'행 · '+activeCount+'건 입력');
+  if ($('#entrySubmitBtn')) $('#entrySubmitBtn').textContent=editing?'수정 저장':(Math.max(1,activeCount)+'건 등록');
+}
+function buildBulkEntryPayload(row, existing, now, forcedId) {
+  existing=existing||null;
+  now=now||new Date().toISOString();
+  const id=forcedId||(existing&&existing.id)||uid();
+  const party=findParty(row.partyId);
+  const members=Array.isArray(row.members)?row.members.filter(Boolean):[];
+  const salePrice=numberOrZero(row.salePrice);
+  const oldSale=(existing&&existing.sale)||{};
+  const saleBasis=Object.assign({},oldSale,{
+    salePrice:salePrice,
+    feeMode:oldSale.feeMode||state.settings.feeMode,
+    feeValue:oldSale.feeValue!=null?oldSale.feeValue:state.settings.feeValue,
+    excludeAmount:numberOrZero(oldSale.excludeAmount),
+    roundingMode:oldSale.roundingMode||state.settings.roundingMode,
+    sellerName:oldSale.sellerName||members[0]||'',
+    soldAt:oldSale.soldAt||now,
+  });
+  return {
+    id:id,
+    date:normalizeDateValue(row.date)||new Date().toISOString().slice(0,10),
+    boss:row.boss||'보스 미입력',
+    partyName:(party&&party.name)||'직접 선택',
+    members:members,
+    item:String(row.item||'').trim(),
+    expectedPrice:salePrice,
+    memo:(existing&&existing.memo)||'',
+    status:existing&&existing.status==='done'?'done':'waiting',
+    createdAt:(existing&&existing.createdAt)||now,
+    sale:saleBasis,
+    payments:prunePayments((existing&&existing.payments)||{},members),
+  };
+}
+function handleBulkEntrySubmit(event) {
+  event.preventDefault();
+  const editingId=$('#entryId').value;
+  const existing=editingId?findEntry(editingId):null;
+  const rows=getActiveBulkEntryRows();
+  if (!rows.length) { showToast('정산 항목과 판매가를 1건 이상 입력하세요.'); return; }
+  if (existing&&rows.length!==1) { showToast('기존 정산 수정은 1건만 가능합니다.'); return; }
+  for (let i=0;i<rows.length;i+=1) {
+    const row=rows[i];
+    if (!normalizeDateValue(row.date)) { showToast((i+1)+'번째 행의 날짜를 확인하세요.'); return; }
+    if (!row.boss) { showToast((i+1)+'번째 행의 보스를 선택하세요.'); return; }
+    if (!row.members.length) { showToast((i+1)+'번째 행의 참여자를 1명 이상 입력하세요.'); return; }
+    if (!row.item) { showToast((i+1)+'번째 행의 아이템명을 입력하세요.'); return; }
+    if (row.salePrice<=0) { showToast((i+1)+'번째 행의 판매가를 입력하세요.'); return; }
+  }
+  const now=new Date().toISOString();
+  if (existing) {
+    const payload=buildBulkEntryPayload(rows[0],existing,now,existing.id);
+    Object.assign(existing,payload);
+    if (payload.status!=='done') selectedEntryIds.add(payload.id);
+    showToast('정산을 수정했습니다.');
+  } else {
+    const payloads=rows.map(function (row) { return buildBulkEntryPayload(row,null,now,''); });
+    state.entries.unshift.apply(state.entries,payloads);
+    payloads.forEach(function (payload) { selectedEntryIds.add(payload.id); });
+    showToast(payloads.length+'건을 등록하고 자동 선택했습니다.');
+  }
+  state.activeTab='waiting';
+  state.detailId=null;
+  saveState();
+  $('#entryDialog').close();
+  render();
+}
 function prunePayments(payments, members) {
   return Object.fromEntries(members.map((member) => [member, Boolean(payments[member])]));
 }
