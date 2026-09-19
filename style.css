@@ -432,3 +432,30 @@ input:focus, textarea:focus, select:focus { border-color: rgba(255, 190, 61, 0.8
 .share-result { margin-bottom: 14px; border-color: rgba(67, 209, 124, 0.30); }
 .share-preview { margin-top: 12px; font-size: 14px; line-height: 1.65; }
 @media (max-width: 520px) { .batch-toolbar { top: 70px; } .batch-actions { grid-template-columns: 1fr 1fr; } .batch-complete { grid-column: 1 / -1; } }
+
+
+/* v5.1 bulk entry table */
+#entryDialog.entry-bulk-dialog { width: min(98vw, 1180px); }
+.entry-bulk-card { padding: 18px; }
+.entry-dialog-desc { margin: 5px 0 0; }
+.entry-bulk-toolbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:16px; padding:11px 12px; border-radius:14px; background:rgba(255,190,61,.08); border:1px solid rgba(255,190,61,.18); }
+.entry-bulk-toolbar > div { display:grid; gap:2px; }
+.entry-bulk-toolbar b { font-size:14px; }
+.entry-bulk-toolbar span { color:var(--muted); font-size:12px; line-height:1.4; }
+.entry-table-wrap { overflow-x:auto; margin-top:12px; border:1px solid rgba(255,255,255,.09); border-radius:16px; background:#10141d; }
+.entry-table { width:100%; min-width:1040px; border-collapse:separate; border-spacing:0; }
+.entry-table th, .entry-table td { padding:8px; border-bottom:1px solid rgba(255,255,255,.07); border-right:1px solid rgba(255,255,255,.05); vertical-align:middle; }
+.entry-table th:last-child, .entry-table td:last-child { border-right:0; }
+.entry-table tbody tr:last-child td { border-bottom:0; }
+.entry-table th { position:sticky; top:0; z-index:2; background:#1a202b; color:var(--muted); font-size:12px; text-align:left; white-space:nowrap; }
+.entry-table input, .entry-table select { min-height:40px; border-radius:10px; padding:8px 9px; }
+.entry-col-date { min-width:145px; width:145px; }
+.entry-col-boss { min-width:155px; width:155px; }
+.entry-col-party { min-width:145px; width:145px; }
+.entry-col-members { min-width:190px; }
+.entry-col-item { min-width:190px; }
+.entry-col-price { min-width:120px; width:120px; }
+.entry-col-action { width:48px; text-align:center; }
+.entry-row-remove { width:36px; min-height:36px; padding:0; border-radius:10px; font-size:20px; }
+.entry-table-help { margin:9px 2px 0; }
+@media (max-width:600px) { #entryDialog.entry-bulk-dialog { width:98vw; } .entry-bulk-card { padding:14px; } .entry-bulk-toolbar { align-items:stretch; flex-direction:column; } .entry-bulk-toolbar button { width:100%; } }
