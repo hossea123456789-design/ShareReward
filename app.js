@@ -1,8 +1,10 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.3.2';
+const APP_VERSION = '5.4.0';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
+const MAPLE_ITEM_DB = Array.isArray(window.MAPLE_ITEM_DB) ? window.MAPLE_ITEM_DB : [];
+const MAPLE_ITEM_CATEGORIES = ['자동', '광휘의 보스 장신구', '칠흑의 보스 장신구', '여명의 보스 장신구', '보스 장신구', '에테르넬 장비', '아케인셰이드 장비', '앱솔랩스 장비', '루타비스 장비', '연마석', '익셉셔널 해머', '기타'];
 
 const statusMap = {
   waiting: { label: '정산대기', cls: 'waiting' },
@@ -98,11 +100,15 @@ function bindGlobalEvents() {
     const row = target.closest('tr[data-entry-row]');
     if (target.matches('[data-field="partyId"]')) syncBulkEntryMembersFromParty(row);
     if (target.matches('[data-field="members"]')) syncBulkEntryRecipientOptions(row);
+    if (target.matches('[data-field="item"]')) applyMapleItemMatchToRow(row);
+    if (target.matches('[data-field="category"]')) target.dataset.autoMatched = '0';
     updateBulkEntrySubmitLabel();
   });
   $('#entryRows').addEventListener('input', function (event) {
     const target = event.target;
-    if (target.matches('[data-field="members"]')) syncBulkEntryRecipientOptions(target.closest('tr[data-entry-row]'));
+    const row = target.closest('tr[data-entry-row]');
+    if (target.matches('[data-field="members"]')) syncBulkEntryRecipientOptions(row);
+    if (target.matches('[data-field="item"]')) applyMapleItemMatchToRow(row);
     updateBulkEntrySubmitLabel();
   });
 
@@ -927,6 +933,7 @@ function handleEntrySubmit(event) {
 
 
 function openBulkEntryDialog(entry = null, targetGroupId = '') {
+  populateMapleItemDatalist();
   const tbody = $('#entryRows');
   tbody.innerHTML = '';
   $('#entryId').value = entry ? entry.id : '';
@@ -975,7 +982,7 @@ function appendBulkEntryRow(data) {
   const partyOptions = state.parties.map(function (party) {
     return '<option value="' + escapeHtml(party.id) + '"' + (party.id === normalized.partyId ? ' selected' : '') + '>' + escapeHtml(party.name) + '</option>';
   }).join('') + '<option value="__custom__"' + (normalized.partyId === '__custom__' ? ' selected' : '') + '>직접 입력</option>';
-  const categories = ['자동', '물욕템', '연마석', '기타'];
+  const categories = MAPLE_ITEM_CATEGORIES;
   const categoryOptions = categories.map(function (category) {
     return '<option value="' + category + '"' + (category === normalized.category ? ' selected' : '') + '>' + category + '</option>';
   }).join('');
@@ -990,11 +997,12 @@ function appendBulkEntryRow(data) {
     '<td class="entry-col-category"><select data-field="category" aria-label="카테고리">' + categoryOptions + '</select></td>' +
     '<td class="entry-col-party"><select data-field="partyId" aria-label="파티">' + partyOptions + '</select></td>' +
     '<td class="entry-col-members"><input data-field="members" type="text" value="' + escapeHtml(normalized.members.join(', ')) + '" placeholder="하람, 영권" aria-label="참여자" /></td>' +
-    '<td class="entry-col-item"><input data-field="item" type="text" value="' + escapeHtml(normalized.item) + '" placeholder="예: 생명의 연마석" aria-label="아이템" /></td>' +
+    '<td class="entry-col-item"><div class="item-entry-wrap"><input data-field="item" type="text" list="mapleItemSuggestions" autocomplete="off" value="' + escapeHtml(normalized.item) + '" placeholder="예: 거대한 공포" aria-label="아이템" /><small class="item-match-hint" data-item-match-hint></small></div></td>' +
     '<td class="entry-col-recipient"><select data-field="recipient" aria-label="아이템 수령">' + recipientOptions + '</select></td>' +
     '<td class="entry-col-price"><input data-field="salePrice" type="number" step="0.001" min="0" value="' + escapeHtml(normalized.salePrice) + '" placeholder="예: 10" aria-label="판매가 또는 아이템 가치" /></td>' +
     '<td class="entry-col-action"><button type="button" class="danger entry-row-remove" data-entry-row-action="remove" aria-label="행 삭제">×</button></td>';
   tbody.appendChild(row);
+  applyMapleItemMatchToRow(row);
   updateBulkEntrySubmitLabel();
 }
 
@@ -1053,7 +1061,10 @@ function buildBulkEntryPayload(row, existing, now, forcedId, groupId) {
   const salePrice = numberOrZero(row.salePrice);
   const oldSale = (existing && existing.sale) || {};
   const recipient = members.includes(row.recipient) ? row.recipient : '';
-  const category = resolveItemCategory(row.category, row.item);
+  const rawItem = String(row.item || '').trim();
+  const itemMatch = findMapleItemMatch(rawItem);
+  const canonicalItem = itemMatch && !itemMatch.pattern ? itemMatch.name : rawItem;
+  const category = resolveItemCategory(row.category, canonicalItem);
   const saleBasis = Object.assign({}, oldSale, {
     salePrice: salePrice,
     feeMode: oldSale.feeMode || state.settings.feeMode,
@@ -1065,6 +1076,10 @@ function buildBulkEntryPayload(row, existing, now, forcedId, groupId) {
     groupId: groupId || oldSale.groupId || makeGroupId(),
     category: category,
     recipient: recipient,
+    itemInput: rawItem,
+    matchedItemName: itemMatch ? itemMatch.name : '',
+    matchedItemScore: itemMatch ? roundFloat(itemMatch.score, 3) : 0,
+    itemDbVersion: window.MAPLE_ITEM_DB_VERSION || '',
   });
   return {
     id: id,
@@ -1072,7 +1087,7 @@ function buildBulkEntryPayload(row, existing, now, forcedId, groupId) {
     boss: row.boss || '보스 미입력',
     partyName: (party && party.name) || '직접 선택',
     members: members,
-    item: String(row.item || '').trim(),
+    item: canonicalItem,
     expectedPrice: salePrice,
     memo: (existing && existing.memo) || '',
     status: existing && existing.status === 'done' ? 'done' : 'waiting',
@@ -1417,9 +1432,129 @@ function buildBatchShareText(entries) {
   }).join('\n\n────────\n\n');
 }
 
+
+function normalizeMapleItemText(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/\[[^\]]*\]|\([^)]*\)/g, '')
+    .replace(/[\s:：·ㆍ,./\\|_\-+]+/g, '')
+    .replace(/(메이플스토리|아이템|장비|드랍|드롭)/g, '');
+}
+
+function stripMapleItemNoise(value) {
+  return normalizeMapleItemText(value)
+    .replace(/(혼돈의|메이린의|칠흑의?|광휘의?|여명의?|보스|장신구|선택|상자|교환권)/g, '');
+}
+
+function levenshteinDistance(a, b) {
+  const left = String(a || '');
+  const right = String(b || '');
+  if (!left.length) return right.length;
+  if (!right.length) return left.length;
+  const prev = Array.from({ length: right.length + 1 }, function (_, i) { return i; });
+  for (let i = 1; i <= left.length; i += 1) {
+    let last = prev[0];
+    prev[0] = i;
+    for (let j = 1; j <= right.length; j += 1) {
+      const saved = prev[j];
+      const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, last + cost);
+      last = saved;
+    }
+  }
+  return prev[right.length];
+}
+
+function mapleItemSimilarity(input, key) {
+  const a = stripMapleItemNoise(input);
+  const b = stripMapleItemNoise(key);
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.includes(b)) return b.length >= 3 ? 0.99 : 0;
+  if (b.includes(a)) return a.length >= 4 ? 0.93 : 0;
+  const distance = levenshteinDistance(a, b);
+  return 1 - distance / Math.max(a.length, b.length);
+}
+
+function findMapleItemMatch(input) {
+  const text = String(input || '').trim();
+  if (!text) return null;
+
+  let best = null;
+  MAPLE_ITEM_DB.forEach(function (item) {
+    [item.name].concat(item.aliases || []).forEach(function (key) {
+      const score = mapleItemSimilarity(text, key);
+      const alias = key !== item.name;
+      if (!best || score > best.score || (score === best.score && !alias && best.alias)) {
+        best = { item:item, name:item.name, category:item.category, type:item.type || '', desirable:Boolean(item.desirable), score:score, matchedKey:key, alias:alias };
+      }
+    });
+  });
+
+  const normalized = normalizeMapleItemText(text);
+  const patternMatch =
+    normalized.includes('에테르넬') ? { name:text, category:'에테르넬 장비', type:'장비', desirable:false, score:0.92, matchedKey:'에테르넬', pattern:true } :
+    normalized.includes('아케인셰이드') ? { name:text, category:'아케인셰이드 장비', type:'장비', desirable:false, score:0.92, matchedKey:'아케인셰이드', pattern:true } :
+    normalized.includes('앱솔랩스') ? { name:text, category:'앱솔랩스 장비', type:'장비', desirable:false, score:0.92, matchedKey:'앱솔랩스', pattern:true } :
+    /(파프니르|하이네스|이글아이|트릭스터)/.test(normalized) ? { name:text, category:'루타비스 장비', type:'장비', desirable:false, score:0.9, matchedKey:'루타비스', pattern:true } :
+    normalized.includes('연마석') ? { name:text, category:'연마석', type:'강화재료', desirable:false, score:0.9, matchedKey:'연마석', pattern:true } :
+    normalized.includes('익셉셔널해머') ? { name:text, category:'익셉셔널 해머', type:'강화재료', desirable:false, score:0.9, matchedKey:'익셉셔널 해머', pattern:true } :
+    null;
+
+  if (patternMatch && (!best || patternMatch.score > best.score)) best = patternMatch;
+  return best && best.score >= 0.72 ? best : null;
+}
+
+function populateMapleItemDatalist() {
+  const list = document.getElementById('mapleItemSuggestions');
+  if (!list || list.dataset.ready === '1') return;
+  list.innerHTML = MAPLE_ITEM_DB.map(function (item) {
+    return '<option value="' + escapeHtml(item.name) + '">' + escapeHtml(item.category) + '</option>';
+  }).join('');
+  list.dataset.ready = '1';
+}
+
+function applyMapleItemMatchToRow(row) {
+  if (!row) return null;
+  const itemInput = row.querySelector('[data-field="item"]');
+  const categorySelect = row.querySelector('[data-field="category"]');
+  const hint = row.querySelector('[data-item-match-hint]');
+  if (!itemInput || !categorySelect) return null;
+
+  const match = findMapleItemMatch(itemInput.value);
+  if (match) {
+    categorySelect.value = match.category;
+    categorySelect.dataset.autoMatched = '1';
+    if (hint) {
+      const canonical = match.pattern ? itemInput.value.trim() : match.name;
+      hint.textContent = '자동 매칭 → ' + canonical + ' · ' + match.category;
+      hint.classList.add('matched');
+    }
+  } else {
+    if (categorySelect.dataset.autoMatched === '1') categorySelect.value = '자동';
+    categorySelect.dataset.autoMatched = '0';
+    if (hint) {
+      hint.textContent = itemInput.value.trim() ? '등록된 장비 DB와 일치하는 항목 없음' : '';
+      hint.classList.remove('matched');
+    }
+  }
+  return match;
+}
+
+function isDesireItem(entry) {
+  const match = findMapleItemMatch(entry && entry.item);
+  if (match) return Boolean(match.desirable);
+  const stored = entry?.sale?.category || '';
+  return stored === '물욕템' || stored === '광휘의 보스 장신구' || stored === '칠흑의 보스 장신구';
+}
+
+
 function resolveItemCategory(raw, item) {
-  if (raw && raw !== '자동') return raw;
-  return String(item || '').includes('연마석') ? '연마석' : '물욕템';
+  if (raw && raw !== '자동' && raw !== '기타' && raw !== '물욕템') return raw;
+  const match = findMapleItemMatch(item);
+  if (match) return match.category;
+  return raw === '물욕템' ? '물욕템' : '기타';
 }
 
 function getEntryGroupId(entry) {
@@ -1429,8 +1564,11 @@ function getEntryGroupId(entry) {
 }
 
 function getEntryCategory(entry) {
-  if (entry?.sale?.category) return entry.sale.category;
-  return String(entry?.item || '').includes('연마석') ? '연마석' : '기타';
+  const match = findMapleItemMatch(entry && entry.item);
+  const stored = entry?.sale?.category || '';
+  if (match && (!stored || stored === '자동' || stored === '기타' || stored === '물욕템')) return match.category;
+  if (stored) return stored;
+  return match ? match.category : '기타';
 }
 
 function getEntryRecipient(entry) {
@@ -1643,7 +1781,7 @@ function getMonthlySummary(monthKey) {
     if (!summary.bosses[entry.boss]) summary.bosses[entry.boss] = { boss: entry.boss, count: 0, value: 0, desireCount: 0, items: [] };
     summary.bosses[entry.boss].count += 1;
     summary.bosses[entry.boss].value += calc.netAmount;
-    if (category === '물욕템') summary.bosses[entry.boss].desireCount += 1;
+    if (isDesireItem(entry)) summary.bosses[entry.boss].desireCount += 1;
     summary.bosses[entry.boss].items.push(entry.item + (getEntryRecipient(entry) ? ' (' + getEntryRecipient(entry) + ' 수령)' : ''));
   });
   pending.forEach(function (entry) { summary.pendingNet += calculateEntry(entry).netAmount; });
@@ -1712,7 +1850,7 @@ function renderTrendChart(monthKey) {
 }
 
 function renderCategoryDonut(summary) {
-  const colors = { '물욕템':'#ffb347', '연마석':'#62c6ff', '기타':'#9aa5b5' };
+  const colors = { '광휘의 보스 장신구':'#ffd166', '칠흑의 보스 장신구':'#b388ff', '여명의 보스 장신구':'#ff8fab', '보스 장신구':'#6ee7a8', '에테르넬 장비':'#61dafb', '아케인셰이드 장비':'#5aa7ff', '앱솔랩스 장비':'#8fa3bf', '루타비스 장비':'#ff7b72', '연마석':'#54d6c3', '익셉셔널 해머':'#ff9f43', '물욕템':'#ffb347', '기타':'#9aa5b5' };
   const items = Object.values(summary.categories || {}).sort(function (a, b) { return b.value - a.value; });
   const total = items.reduce(function (sum, item) { return sum + numberOrZero(item.value); }, 0);
   let cursor = 0;

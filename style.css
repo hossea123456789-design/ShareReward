@@ -996,3 +996,28 @@ input:focus, textarea:focus, select:focus { border-color: rgba(255, 190, 61, 0.8
     min-width: 0;
   }
 }
+
+/* v5.4 Maple item DB auto matching */
+.item-entry-wrap {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.item-match-hint {
+  min-height: 14px;
+  color: #7f8a9b;
+  font-size: 9px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.item-match-hint.matched {
+  color: #75ddb0;
+}
+.entry-col-category select {
+  font-size: 11px;
+}
+@media (max-width: 900px) {
+  .item-match-hint {
+    font-size: 10px;
+  }
+}
