@@ -459,3 +459,55 @@ input:focus, textarea:focus, select:focus { border-color: rgba(255, 190, 61, 0.8
 .entry-row-remove { width:36px; min-height:36px; padding:0; border-radius:10px; font-size:20px; }
 .entry-table-help { margin:9px 2px 0; }
 @media (max-width:600px) { #entryDialog.entry-bulk-dialog { width:98vw; } .entry-bulk-card { padding:14px; } .entry-bulk-toolbar { align-items:stretch; flex-direction:column; } .entry-bulk-toolbar button { width:100%; } }
+
+/* v5.2 groups, recipient settlement, monthly summary */
+.entry-bulk-actions { display:flex; align-items:flex-end; gap:8px; }
+.entry-group-picker { display:grid; gap:5px; min-width:220px; }
+.entry-group-picker span { color:var(--muted); font-size:11px; font-weight:800; }
+.entry-group-picker select { min-height:38px; }
+.entry-table { min-width:1320px; }
+.entry-col-category { min-width:110px; width:110px; }
+.entry-col-recipient { min-width:150px; width:150px; }
+.group-list { display:grid; gap:12px; }
+.group-card { padding:15px; border-radius:20px; background:var(--panel); border:1px solid rgba(255,255,255,.09); box-shadow:var(--shadow); }
+.group-card.done-group { border-color:rgba(67,209,124,.18); }
+.group-card-head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+.group-select { display:flex; align-items:flex-start; gap:9px; font-weight:900; }
+.group-select input,.group-item-check input { width:18px; height:18px; min-height:0; accent-color:var(--accent); }
+.group-total { margin-top:10px; padding:10px 12px; border-radius:13px; background:rgba(255,190,61,.08); color:var(--muted); font-size:13px; }
+.group-total b { color:var(--text); margin-left:4px; }
+.group-items { display:grid; gap:7px; margin-top:10px; }
+.group-item { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:9px; padding:10px; border-radius:13px; background:rgba(255,255,255,.04); }
+.group-item.completed { grid-template-columns:1fr; }
+.group-item-main { display:grid; gap:3px; min-width:0; }
+.group-item-main b { font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.group-item-main span { color:var(--muted); font-size:12px; }
+.group-merge-row { display:grid; grid-template-columns:1fr auto; gap:8px; }
+.settlement-box { margin-top:12px; padding:12px; border-radius:14px; background:rgba(67,209,124,.07); border:1px solid rgba(67,209,124,.16); }
+.settlement-box h3 { margin:0 0 8px; font-size:14px; }
+.transfer-row,.summary-row { display:flex; justify-content:space-between; gap:12px; padding:8px 0; border-top:1px solid rgba(255,255,255,.06); }
+.transfer-row:first-of-type,.summary-row:first-of-type { border-top:0; }
+.transfer-row span,.summary-row span { color:var(--muted); font-weight:800; text-align:right; }
+.monthly-summary { margin-top:14px; }
+.monthly-title { margin-top:0; }
+.monthly-title input { width:auto; min-height:38px; padding:6px 9px; }
+.monthly-stats { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; margin-top:12px; }
+.summary-section { margin-top:16px; }
+.summary-section h3 { margin-bottom:8px; font-size:14px; }
+.summary-chips { display:flex; flex-wrap:wrap; gap:7px; }
+.summary-chip { display:grid; gap:2px; padding:9px 11px; border-radius:12px; background:rgba(255,255,255,.045); }
+.summary-chip b { font-size:12px; }
+.summary-chip span { color:var(--muted); font-size:11px; }
+.boss-summary-row { padding:10px 0; border-top:1px solid rgba(255,255,255,.06); }
+.boss-summary-row:first-of-type { border-top:0; }
+.boss-summary-row > div { display:flex; justify-content:space-between; gap:10px; }
+.boss-summary-row span { color:var(--muted); font-size:12px; text-align:right; }
+.boss-summary-row p { margin:5px 0 0; color:#dfe4ec; font-size:12px; line-height:1.45; }
+@media (max-width:600px) {
+  .entry-bulk-actions { align-items:stretch; flex-direction:column; }
+  .entry-group-picker { min-width:0; }
+  .group-merge-row { grid-template-columns:1fr; }
+  .group-item { grid-template-columns:auto 1fr; }
+  .group-item > button { grid-column:2; }
+  .monthly-stats { grid-template-columns:1fr 1fr; }
+}

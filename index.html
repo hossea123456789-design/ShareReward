@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#111318" />
   <title>보스 정산 공유 웹앱</title>
-  <link rel="stylesheet" href="./style.css?v=5.1.0" />
+  <link rel="stylesheet" href="./style.css?v=5.2.0" />
 </head>
 <body>
   <div class="app-shell">
@@ -45,19 +45,22 @@
       <div class="entry-bulk-toolbar">
         <div>
           <b id="entryRowCount">1건 입력</b>
-          <span>새 행은 바로 위 행의 날짜·보스·파티·참여자를 복사합니다.</span>
+          <span>한 번에 등록한 행은 하나의 정산 그룹이 됩니다.</span>
         </div>
-        <button type="button" id="addEntryRowBtn" class="secondary">+ 행 추가</button>
+        <div class="entry-bulk-actions">
+          <label class="entry-group-picker"><span>등록 그룹</span><select id="entryTargetGroup"></select></label>
+          <button type="button" id="addEntryRowBtn" class="secondary">+ 행 추가</button>
+        </div>
       </div>
       <div class="entry-table-wrap">
         <table class="entry-table">
           <thead>
-            <tr><th>날짜</th><th>보스</th><th>파티</th><th>참여자</th><th>아이템</th><th>판매가(억)</th><th aria-label="행 삭제"></th></tr>
+            <tr><th>날짜</th><th>보스</th><th>카테고리</th><th>파티</th><th>참여자</th><th>아이템</th><th>아이템 수령</th><th>금액(억)</th><th aria-label="행 삭제"></th></tr>
           </thead>
           <tbody id="entryRows"></tbody>
         </table>
       </div>
-      <p class="item-sub entry-table-help">참여자는 쉼표로 구분합니다. 파티를 변경하면 해당 파티의 참여자가 자동 입력되며 이후 직접 수정할 수 있습니다.</p>
+      <p class="item-sub entry-table-help">아이템을 누가 직접 가져가면 수령자를 선택하세요. 수령 아이템은 경매장 수수료 없이 해당 가치만큼 그 사람의 정산금에서 자동 차감됩니다.</p>
       <div class="dialog-actions">
         <button type="button" class="ghost" data-close-dialog>취소</button>
         <button type="submit" id="entrySubmitBtn" class="primary">1건 등록</button>
@@ -155,6 +158,6 @@
   <script>
     window.BOSS_SPLIT_REMOTE_URL = 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec';
   </script>
-  <script src="./app.js?v=5.1.0"></script>
+  <script src="./app.js?v=5.2.0"></script>
 </body>
 </html>

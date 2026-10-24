@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.1.0';
+const APP_VERSION = '5.2.0';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 
 const statusMap = {
@@ -86,6 +86,7 @@ function bindGlobalEvents() {
       if (rows.length <= 1) {
         row.querySelector('[data-field="item"]').value = '';
         row.querySelector('[data-field="salePrice"]').value = '';
+        row.querySelector('[data-field="recipient"]').value = '';
       } else {
         row.remove();
       }
@@ -94,12 +95,16 @@ function bindGlobalEvents() {
   });
   $('#entryRows').addEventListener('change', function (event) {
     const target = event.target;
-    if (target.matches('[data-field="partyId"]')) {
-      syncBulkEntryMembersFromParty(target.closest('tr[data-entry-row]'));
-    }
+    const row = target.closest('tr[data-entry-row]');
+    if (target.matches('[data-field="partyId"]')) syncBulkEntryMembersFromParty(row);
+    if (target.matches('[data-field="members"]')) syncBulkEntryRecipientOptions(row);
     updateBulkEntrySubmitLabel();
   });
-  $('#entryRows').addEventListener('input', updateBulkEntrySubmitLabel);
+  $('#entryRows').addEventListener('input', function (event) {
+    const target = event.target;
+    if (target.matches('[data-field="members"]')) syncBulkEntryRecipientOptions(target.closest('tr[data-entry-row]'));
+    updateBulkEntrySubmitLabel();
+  });
 
   $('#saleForm').addEventListener('submit', handleSaleSubmit);
   ['salePrice', 'feeMode', 'feeValue', 'excludeAmount', 'cashRatePerBillion', 'sellerName', 'roundingMode'].forEach(function (id) {
@@ -115,9 +120,7 @@ function bindGlobalEvents() {
   app.addEventListener('change', handleAppChange);
 }
 
-function setTodayToEntryDialog() {
-  $('#entryDate').value = new Date().toISOString().slice(0, 10);
-}
+function setTodayToEntryDialog() {}
 
 function loadState() {
   try {
@@ -377,11 +380,12 @@ function updateNav() {
 
 
 function renderHome() {
-  const monthKey = new Date().toISOString().slice(0, 7);
-  const monthEntries = state.entries.filter((e) => e.date.startsWith(monthKey));
+  const currentMonth = dateToYmd(new Date()).slice(0, 7);
+  const summaryMonth = sessionStorage.getItem('bossSplit.summaryMonth') || currentMonth;
+  const monthEntries = state.entries.filter(function (e) { return e.date.startsWith(currentMonth); });
   const pending = state.entries.filter(isPendingEntry).length;
-  const doneThisMonth = monthEntries.filter((e) => e.status === 'done').length;
-  const recent = [...state.entries].sort(sortRecent).slice(0, 5);
+  const doneThisMonth = monthEntries.filter(function (e) { return e.status === 'done'; }).length;
+  const recent = state.entries.slice().sort(sortRecent).slice(0, 5);
 
   app.innerHTML = `
     <section class="card">
@@ -393,26 +397,36 @@ function renderHome() {
       <button class="big-action" data-action="new-entry">+ 정산 등록</button>
     </section>
 
+    ${renderMonthlySummary(summaryMonth)}
+
     <div class="section-title">
       <h2>최근 정산</h2>
       <span class="sub">최신 5건</span>
     </div>
     ${recent.length ? `<div class="list">${recent.map(entryCard).join('')}</div>` : emptyState('아직 정산 기록이 없습니다', '판매된 아이템을 정산 등록하면 이곳에 표시됩니다.')}
   `;
-}
 
+  $('#summaryMonth')?.addEventListener('change', function (event) {
+    sessionStorage.setItem('bossSplit.summaryMonth', event.target.value);
+    renderHome();
+  });
+}
 
 function renderList() {
   const list = state.entries.filter(isPendingEntry).sort(sortRecent);
-  const validIds = new Set(list.map((e) => e.id));
-  selectedEntryIds = new Set([...selectedEntryIds].filter((id) => validIds.has(id)));
+  const validIds = new Set(list.map(function (e) { return e.id; }));
+  selectedEntryIds = new Set(Array.from(selectedEntryIds).filter(function (id) { return validIds.has(id); }));
+  const groups = getStoredGroups(list);
   const selected = getSelectedPendingEntries();
   const summary = getBatchSelectionSummary(selected);
+  const targetOptions = groups.map(function (group) {
+    return `<option value="${escapeHtml(group.id)}">${escapeHtml(getGroupLabel(group))}</option>`;
+  }).join('');
 
   app.innerHTML = `
     <section class="card">
       <h2>정산대기</h2>
-      <p class="item-sub">정산을 연속으로 등록하면 방금 등록한 건들이 자동 선택됩니다. 필요한 건만 골라 한 번에 완료할 수 있습니다.</p>
+      <p class="item-sub">한 번에 등록한 행은 하나의 그룹입니다. 그룹에 항목을 더 넣거나, 따로 만든 항목을 기존 그룹으로 합칠 수 있습니다.</p>
       <button class="big-action" data-action="new-entry">+ 정산 등록</button>
     </section>
 
@@ -424,20 +438,30 @@ function renderList() {
       <div class="batch-actions">
         <button class="ghost small" data-action="select-all-pending" ${list.length ? '' : 'disabled'}>전체 선택</button>
         <button class="ghost small" data-action="clear-selection" ${selected.length ? '' : 'disabled'}>선택 해제</button>
-        <button class="primary batch-complete" data-action="complete-selected" ${selected.length ? '' : 'disabled'}>선택 ${selected.length}건 정산 완료</button>
+        <button class="primary batch-complete" data-action="complete-selected" ${selected.length ? '' : 'disabled'}>선택 그룹 정산 완료</button>
+      </div>
+      <div class="group-merge-row">
+        <select id="mergeTargetGroup" ${groups.length ? '' : 'disabled'}>
+          <option value="">편입할 대상 그룹 선택</option>
+          ${targetOptions}
+        </select>
+        <button class="secondary" data-action="merge-selected-group" ${selected.length && groups.length ? '' : 'disabled'}>선택 항목을 그룹에 편입</button>
       </div>
     </section>
 
-    <div class="section-title"><h2>대기 목록</h2><span class="sub">${list.length}건</span></div>
-    ${list.length ? `<div class="list">${list.map(entryCard).join('')}</div>` : emptyState('정산대기 기록이 없습니다', '판매가 끝난 항목을 등록하면 바로 정산할 수 있습니다.')}
+    <div class="section-title"><h2>정산 그룹</h2><span class="sub">${groups.length}그룹 · ${list.length}건</span></div>
+    ${groups.length ? `<div class="group-list">${groups.map(pendingGroupCard).join('')}</div>` : emptyState('정산대기 기록이 없습니다', '정산을 등록하면 그룹 단위로 이곳에 표시됩니다.')}
   `;
 }
 
-
 function renderDone() {
   const keyword = sessionStorage.getItem('bossSplit.search') || '';
-  const done = state.entries.filter((e) => e.status === 'done');
-  const filtered = filterEntries(done, keyword).sort(sortRecent);
+  const done = state.entries.filter(function (e) { return e.status === 'done'; });
+  const filtered = filterEntries(done, keyword);
+  const matchedGroupIds = new Set(filtered.map(getEntryGroupId));
+  const visible = keyword ? done.filter(function (entry) { return matchedGroupIds.has(getEntryGroupId(entry)); }) : done;
+  const groups = getStoredGroups(visible);
+
   app.innerHTML = `
     ${lastBatchShareText ? `
       <section class="card share-result">
@@ -451,21 +475,20 @@ function renderDone() {
 
     <section class="card">
       <h2>정산완료</h2>
-      <p class="item-sub">완료된 정산은 완료 시점의 억당 시세를 보존합니다.</p>
+      <p class="item-sub">완료 기록도 등록 당시 그룹을 그대로 유지합니다. 아이템 수령분까지 상계한 최종 송금 방향을 함께 표시합니다.</p>
     </section>
-    <div class="section-title"><h2>완료 기록</h2><span class="sub">${filtered.length}/${done.length}건</span></div>
+    <div class="section-title"><h2>완료 그룹</h2><span class="sub">${groups.length}그룹 · ${visible.length}건</span></div>
     <div class="search-row">
-      <input id="doneSearch" type="search" value="${escapeHtml(keyword)}" placeholder="예: 하드 스우, 몽환, 하람" />
+      <input id="doneSearch" type="search" value="${escapeHtml(keyword)}" placeholder="보스, 아이템, 참여자, 수령자 검색" />
       <button class="secondary" data-action="clear-search">초기화</button>
     </div>
-    ${filtered.length ? `<div class="list">${filtered.map(entryCard).join('')}</div>` : emptyState('검색 결과가 없습니다', '다른 보스명, 아이템명, 참여자명으로 검색해보세요.')}
+    ${groups.length ? `<div class="group-list">${groups.map(completedGroupCard).join('')}</div>` : emptyState('검색 결과가 없습니다', '다른 보스명, 아이템명, 참여자명으로 검색해보세요.')}
   `;
-  $('#doneSearch')?.addEventListener('input', (event) => {
+  $('#doneSearch')?.addEventListener('input', function (event) {
     sessionStorage.setItem('bossSplit.search', event.target.value.trim());
     renderDone();
   });
 }
-
 
 function renderDetail(id) {
   const entry = findEntry(id);
@@ -478,29 +501,30 @@ function renderDetail(id) {
   const pending = isPendingEntry(entry);
   const st = pending ? statusMap.waiting : statusMap.done;
   const rateLabel = entry.status === 'done' ? '완료 시세' : '현재 시세';
+  const recipient = getEntryRecipient(entry);
+  const category = getEntryCategory(entry);
 
   app.innerHTML = `
     <section class="item-card">
       <div class="item-head">
         <div>
           <div class="item-title">${escapeHtml(entry.boss)} 정산</div>
-          <div class="item-sub">${formatDate(entry.date)} · ${entry.members.length}인</div>
+          <div class="item-sub">${formatDate(entry.date)} · ${entry.members.length}인 · ${escapeHtml(category)}</div>
         </div>
         <span class="badge ${st.cls}">${st.label}</span>
       </div>
-
       <div class="kv-grid">
         <div class="kv"><span>정산 항목</span><b>${escapeHtml(entry.item)}</b></div>
-        <div class="kv"><span>판매가</span><b>${formatAmount(calc.salePrice)}</b></div>
-        <div class="kv"><span>1인 정산</span><b>${formatAmount(calc.perPerson)}${calc.cashRatePerBillion > 0 ? ` / ${formatWon(calc.perPersonCash)}` : ''}</b></div>
+        <div class="kv"><span>${recipient ? '아이템 가치' : '판매가'}</span><b>${formatAmount(calc.salePrice)}</b></div>
+        <div class="kv"><span>1인 지분</span><b>${formatAmount(calc.perPerson)}${calc.cashRatePerBillion > 0 ? ` / ${formatWon(calc.perPersonCash)}` : ''}</b></div>
         <div class="kv"><span>${rateLabel}</span><b>${calc.cashRatePerBillion > 0 ? `억당 ${formatWon(calc.cashRatePerBillion)}` : '-'}</b></div>
+        <div class="kv"><span>아이템 수령</span><b>${recipient ? escapeHtml(recipient) : '판매 정산'}</b></div>
+        <div class="kv"><span>그룹</span><b>${escapeHtml(getEntryGroupId(entry).replace(/^legacy_/, '기존 기록 '))}</b></div>
       </div>
-
       <div class="detail-block">
         <h3>참여자</h3>
         <p class="item-sub">${entry.members.map(escapeHtml).join(', ') || '-'}</p>
       </div>
-
       <div class="item-actions">
         <button class="ghost" data-action="back-list">목록으로</button>
         ${pending ? `<button class="secondary" data-action="edit-entry" data-id="${entry.id}">수정</button>` : ''}
@@ -641,12 +665,11 @@ function entryCard(entry) {
   const pending = isPendingEntry(entry);
   const st = pending ? statusMap.waiting : statusMap.done;
   const calc = calculateEntry(entry);
-  const canSelect = pending && state.activeTab === 'waiting';
-  const selected = canSelect && selectedEntryIds.has(entry.id);
-  const amountLine = `1인당 ${formatAmount(calc.perPerson)}${calc.cashRatePerBillion > 0 ? ` / ${formatWon(calc.perPersonCash)}` : ''}`;
-
+  const recipient = getEntryRecipient(entry);
+  const category = getEntryCategory(entry);
+  const amountLine = `1인 ${formatAmount(calc.perPerson)}${calc.cashRatePerBillion > 0 ? ` / ${formatWon(calc.perPersonCash)}` : ''}`;
   return `
-    <article class="item-card ${selected ? 'selected' : ''}" data-id="${entry.id}">
+    <article class="item-card" data-id="${entry.id}">
       <div class="item-head">
         <div>
           <div class="item-title">${escapeHtml(entry.boss)}</div>
@@ -654,22 +677,14 @@ function entryCard(entry) {
         </div>
         <span class="badge ${st.cls}">${st.label}</span>
       </div>
-
-      ${canSelect ? `
-        <label class="entry-select">
-          <input type="checkbox" data-action="select-entry" data-id="${entry.id}" ${selected ? 'checked' : ''} />
-          <span>이번 묶음에 포함</span>
-        </label>
-      ` : ''}
-
       <div class="item-meta">
-        <span class="badge draft">판매가 ${formatAmount(calc.salePrice)} · ${amountLine}</span>
+        <span class="badge draft">${escapeHtml(category)}</span>
+        <span class="badge draft">${recipient ? `${escapeHtml(recipient)} 수령` : '판매 정산'}</span>
+        <span class="badge draft">${amountLine}</span>
       </div>
-
       <div class="item-actions">
         <button class="ghost" data-action="detail" data-id="${entry.id}">상세</button>
         ${pending ? `<button class="secondary" data-action="edit-entry" data-id="${entry.id}">수정</button>` : ''}
-        ${!pending ? `<button class="secondary" data-action="copy-share" data-id="${entry.id}">공유문구 복사</button>` : ''}
       </div>
     </article>
   `;
@@ -685,36 +700,39 @@ function handleAppClick(event) {
   if (!target) return;
   const action = target.dataset.action;
   const id = target.dataset.id;
-
+  const groupId = target.dataset.groupId;
   const actions = {
-    'new-entry': () => openBulkEntryDialog(),
-    detail: () => openDetail(id),
-    'back-list': () => { state.detailId = null; saveState({ localOnly: true }); render(); },
-    'edit-entry': () => openBulkEntryDialog(findEntry(id)),
-    'delete-entry': () => deleteEntry(id),
-    'copy-share': () => copyShare(id),
+    'new-entry': function () { openBulkEntryDialog(); },
+    detail: function () { openDetail(id); },
+    'back-list': function () { state.detailId = null; saveState({ localOnly: true }); render(); },
+    'edit-entry': function () { openBulkEntryDialog(findEntry(id)); },
+    'delete-entry': function () { deleteEntry(id); },
+    'copy-share': function () { copyShare(id); },
     'select-all-pending': selectAllPending,
     'clear-selection': clearPendingSelection,
     'complete-selected': completeSelectedBatch,
+    'complete-group': function () { completeGroup(groupId); },
+    'add-to-group': function () { openBulkEntryDialog(null, groupId); },
+    'merge-selected-group': moveSelectedToGroup,
+    'copy-group-share': function () { copyGroupShare(groupId); },
     'copy-batch-share': copyBatchShare,
-    'clear-search': () => { sessionStorage.removeItem('bossSplit.search'); renderDone(); },
+    'clear-search': function () { sessionStorage.removeItem('bossSplit.search'); renderDone(); },
     'save-rules': saveRules,
-    'new-party': () => openPartyDialog(),
-    'edit-party': () => openPartyDialog(findParty(id)),
-    'delete-party': () => deleteParty(id),
+    'new-party': function () { openPartyDialog(); },
+    'edit-party': function () { openPartyDialog(findParty(id)); },
+    'delete-party': function () { deleteParty(id); },
     'save-bosses': saveBosses,
     'export-data': exportData,
-    'import-data': () => $('#importFile').click(),
+    'import-data': function () { $('#importFile').click(); },
     'seed-demo': seedDemoData,
     'reset-data': resetData,
     'save-remote-url': saveRemoteUrlFromSettings,
     'clear-remote-url': clearRemoteUrl,
-    'pull-remote': () => pullRemoteState(),
-    'push-remote': () => pushRemoteState(),
+    'pull-remote': function () { pullRemoteState(); },
+    'push-remote': function () { pushRemoteState(); },
   };
-  actions[action]?.();
+  if (actions[action]) actions[action]();
 }
-
 
 function handleAppChange(event) {
   const target = event.target;
@@ -724,7 +742,17 @@ function handleAppChange(event) {
     renderList();
     return;
   }
-
+  if (target.matches('[data-action="select-group"]')) {
+    const group = getStoredGroups(state.entries.filter(isPendingEntry)).find(function (g) { return g.id === target.dataset.groupId; });
+    if (group) {
+      group.entries.forEach(function (entry) {
+        if (target.checked) selectedEntryIds.add(entry.id);
+        else selectedEntryIds.delete(entry.id);
+      });
+    }
+    renderList();
+    return;
+  }
   if (target.matches('[data-action="toggle-payment"]')) {
     const entry = findEntry(target.dataset.id);
     if (!entry) return;
@@ -890,19 +918,23 @@ function handleEntrySubmit(event) {
 }
 
 
-function openBulkEntryDialog(entry = null) {
+function openBulkEntryDialog(entry = null, targetGroupId = '') {
   const tbody = $('#entryRows');
   tbody.innerHTML = '';
   $('#entryId').value = entry ? entry.id : '';
   $('#entryDialogTitle').textContent = entry ? '정산 수정' : '정산 일괄 등록';
   $('#addEntryRowBtn').hidden = Boolean(entry);
+  populateEntryGroupOptions(targetGroupId || (entry ? getEntryGroupId(entry) : ''), entry);
   appendBulkEntryRow(makeBulkEntryRowData(entry));
   updateBulkEntrySubmitLabel();
   $('#entryDialog').showModal();
 }
+
 function makeBulkEntryRowData(entry = null) {
   const firstParty = state.parties[0] || null;
-  const matchedParty = entry ? (state.parties.find(function (party) { return party.name === entry.partyName; }) || null) : firstParty;
+  const matchedParty = entry
+    ? (state.parties.find(function (party) { return party.name === entry.partyName; }) || null)
+    : firstParty;
   return {
     date: normalizeDateValue(entry && entry.date) || new Date().toISOString().slice(0, 10),
     boss: (entry && entry.boss) || (state.settings.bosses && state.settings.bosses[0]) || '',
@@ -910,8 +942,11 @@ function makeBulkEntryRowData(entry = null) {
     members: entry && entry.members && entry.members.length ? entry.members.slice() : ((matchedParty && matchedParty.members) || []).slice(),
     item: (entry && entry.item) || '',
     salePrice: entry ? ((entry.sale && entry.sale.salePrice) != null ? entry.sale.salePrice : entry.expectedPrice) : '',
+    category: entry ? getEntryCategory(entry) : '자동',
+    recipient: entry ? getEntryRecipient(entry) : '',
   };
 }
+
 function appendBulkEntryRow(data) {
   data = data || {};
   const tbody = $('#entryRows');
@@ -922,6 +957,8 @@ function appendBulkEntryRow(data) {
     members: Array.isArray(data.members) ? data.members : [],
     item: data.item || '',
     salePrice: data.salePrice != null ? data.salePrice : '',
+    category: data.category || '자동',
+    recipient: data.recipient || '',
   };
   const bosses = Array.from(new Set([].concat(state.settings.bosses || [], normalized.boss).filter(Boolean)));
   const bossOptions = bosses.map(function (boss) {
@@ -930,19 +967,29 @@ function appendBulkEntryRow(data) {
   const partyOptions = state.parties.map(function (party) {
     return '<option value="' + escapeHtml(party.id) + '"' + (party.id === normalized.partyId ? ' selected' : '') + '>' + escapeHtml(party.name) + '</option>';
   }).join('') + '<option value="__custom__"' + (normalized.partyId === '__custom__' ? ' selected' : '') + '>직접 입력</option>';
+  const categories = ['자동', '물욕템', '연마석', '기타'];
+  const categoryOptions = categories.map(function (category) {
+    return '<option value="' + category + '"' + (category === normalized.category ? ' selected' : '') + '>' + category + '</option>';
+  }).join('');
+  const recipientOptions = ['<option value="">판매 정산</option>'].concat(normalized.members.map(function (member) {
+    return '<option value="' + escapeHtml(member) + '"' + (member === normalized.recipient ? ' selected' : '') + '>' + escapeHtml(member) + ' 수령</option>';
+  })).join('');
   const row = document.createElement('tr');
   row.dataset.entryRow = '1';
   row.innerHTML =
     '<td class="entry-col-date"><input data-field="date" type="date" value="' + escapeHtml(normalized.date) + '" aria-label="정산 날짜" /></td>' +
     '<td class="entry-col-boss"><select data-field="boss" aria-label="보스">' + bossOptions + '</select></td>' +
+    '<td class="entry-col-category"><select data-field="category" aria-label="카테고리">' + categoryOptions + '</select></td>' +
     '<td class="entry-col-party"><select data-field="partyId" aria-label="파티">' + partyOptions + '</select></td>' +
     '<td class="entry-col-members"><input data-field="members" type="text" value="' + escapeHtml(normalized.members.join(', ')) + '" placeholder="하람, 영권" aria-label="참여자" /></td>' +
     '<td class="entry-col-item"><input data-field="item" type="text" value="' + escapeHtml(normalized.item) + '" placeholder="예: 생명의 연마석" aria-label="아이템" /></td>' +
-    '<td class="entry-col-price"><input data-field="salePrice" type="number" step="0.001" min="0" value="' + escapeHtml(normalized.salePrice) + '" placeholder="예: 10" aria-label="판매가" /></td>' +
+    '<td class="entry-col-recipient"><select data-field="recipient" aria-label="아이템 수령">' + recipientOptions + '</select></td>' +
+    '<td class="entry-col-price"><input data-field="salePrice" type="number" step="0.001" min="0" value="' + escapeHtml(normalized.salePrice) + '" placeholder="예: 10" aria-label="판매가 또는 아이템 가치" /></td>' +
     '<td class="entry-col-action"><button type="button" class="danger entry-row-remove" data-entry-row-action="remove" aria-label="행 삭제">×</button></td>';
   tbody.appendChild(row);
   updateBulkEntrySubmitLabel();
 }
+
 function addBulkEntryRowFromPrevious() {
   const rows = Array.from($('#entryRows').querySelectorAll('tr[data-entry-row]'));
   const previous = rows.length ? readBulkEntryRow(rows[rows.length - 1]) : makeBulkEntryRowData();
@@ -960,19 +1007,24 @@ function syncBulkEntryMembersFromParty(row) {
   if (!party) return;
   const membersInput = row.querySelector('[data-field="members"]');
   if (membersInput) membersInput.value = party.members.join(', ');
+  syncBulkEntryRecipientOptions(row);
 }
+
 function readBulkEntryRow(row) {
   const salePriceInput = row.querySelector('[data-field="salePrice"]');
   return {
-    date:(row.querySelector('[data-field="date"]')||{}).value||'',
-    boss:(row.querySelector('[data-field="boss"]')||{}).value||'',
-    partyId:(row.querySelector('[data-field="partyId"]')||{}).value||'__custom__',
-    members:splitMembers(((row.querySelector('[data-field="members"]')||{}).value||'')),
-    item:(((row.querySelector('[data-field="item"]')||{}).value||'')).trim(),
-    salePriceRaw:(((salePriceInput||{}).value||'')).trim(),
-    salePrice:numberOrZero((salePriceInput||{}).value),
+    date: (row.querySelector('[data-field="date"]') || {}).value || '',
+    boss: (row.querySelector('[data-field="boss"]') || {}).value || '',
+    category: (row.querySelector('[data-field="category"]') || {}).value || '자동',
+    partyId: (row.querySelector('[data-field="partyId"]') || {}).value || '__custom__',
+    members: splitMembers(((row.querySelector('[data-field="members"]') || {}).value || '')),
+    item: (((row.querySelector('[data-field="item"]') || {}).value || '')).trim(),
+    recipient: (row.querySelector('[data-field="recipient"]') || {}).value || '',
+    salePriceRaw: (((salePriceInput || {}).value || '')).trim(),
+    salePrice: numberOrZero((salePriceInput || {}).value),
   };
 }
+
 function getActiveBulkEntryRows() {
   return Array.from($('#entryRows').querySelectorAll('tr[data-entry-row]')).map(readBulkEntryRow).filter(function (row) { return row.item || row.salePriceRaw; });
 }
@@ -984,71 +1036,85 @@ function updateBulkEntrySubmitLabel() {
   if ($('#entryRowCount')) $('#entryRowCount').textContent=editing?'1건 수정':(Math.max(1,rowCount)+'행 · '+activeCount+'건 입력');
   if ($('#entrySubmitBtn')) $('#entrySubmitBtn').textContent=editing?'수정 저장':(Math.max(1,activeCount)+'건 등록');
 }
-function buildBulkEntryPayload(row, existing, now, forcedId) {
-  existing=existing||null;
-  now=now||new Date().toISOString();
-  const id=forcedId||(existing&&existing.id)||uid();
-  const party=findParty(row.partyId);
-  const members=Array.isArray(row.members)?row.members.filter(Boolean):[];
-  const salePrice=numberOrZero(row.salePrice);
-  const oldSale=(existing&&existing.sale)||{};
-  const saleBasis=Object.assign({},oldSale,{
-    salePrice:salePrice,
-    feeMode:oldSale.feeMode||state.settings.feeMode,
-    feeValue:oldSale.feeValue!=null?oldSale.feeValue:state.settings.feeValue,
-    excludeAmount:numberOrZero(oldSale.excludeAmount),
-    roundingMode:oldSale.roundingMode||state.settings.roundingMode,
-    sellerName:oldSale.sellerName||members[0]||'',
-    soldAt:oldSale.soldAt||now,
+function buildBulkEntryPayload(row, existing, now, forcedId, groupId) {
+  existing = existing || null;
+  now = now || new Date().toISOString();
+  const id = forcedId || (existing && existing.id) || uid();
+  const party = findParty(row.partyId);
+  const members = Array.isArray(row.members) ? row.members.filter(Boolean) : [];
+  const salePrice = numberOrZero(row.salePrice);
+  const oldSale = (existing && existing.sale) || {};
+  const recipient = members.includes(row.recipient) ? row.recipient : '';
+  const category = resolveItemCategory(row.category, row.item);
+  const saleBasis = Object.assign({}, oldSale, {
+    salePrice: salePrice,
+    feeMode: oldSale.feeMode || state.settings.feeMode,
+    feeValue: oldSale.feeValue != null ? oldSale.feeValue : state.settings.feeValue,
+    excludeAmount: numberOrZero(oldSale.excludeAmount),
+    roundingMode: oldSale.roundingMode || state.settings.roundingMode,
+    sellerName: oldSale.sellerName || members[0] || '',
+    soldAt: oldSale.soldAt || now,
+    groupId: groupId || oldSale.groupId || makeGroupId(),
+    category: category,
+    recipient: recipient,
   });
   return {
-    id:id,
-    date:normalizeDateValue(row.date)||new Date().toISOString().slice(0,10),
-    boss:row.boss||'보스 미입력',
-    partyName:(party&&party.name)||'직접 선택',
-    members:members,
-    item:String(row.item||'').trim(),
-    expectedPrice:salePrice,
-    memo:(existing&&existing.memo)||'',
-    status:existing&&existing.status==='done'?'done':'waiting',
-    createdAt:(existing&&existing.createdAt)||now,
-    sale:saleBasis,
-    payments:prunePayments((existing&&existing.payments)||{},members),
+    id: id,
+    date: normalizeDateValue(row.date) || new Date().toISOString().slice(0, 10),
+    boss: row.boss || '보스 미입력',
+    partyName: (party && party.name) || '직접 선택',
+    members: members,
+    item: String(row.item || '').trim(),
+    expectedPrice: salePrice,
+    memo: (existing && existing.memo) || '',
+    status: existing && existing.status === 'done' ? 'done' : 'waiting',
+    createdAt: (existing && existing.createdAt) || now,
+    sale: saleBasis,
+    payments: prunePayments((existing && existing.payments) || {}, members),
   };
 }
+
 function handleBulkEntrySubmit(event) {
   event.preventDefault();
-  const editingId=$('#entryId').value;
-  const existing=editingId?findEntry(editingId):null;
-  const rows=getActiveBulkEntryRows();
-  if (!rows.length) { showToast('정산 항목과 판매가를 1건 이상 입력하세요.'); return; }
-  if (existing&&rows.length!==1) { showToast('기존 정산 수정은 1건만 가능합니다.'); return; }
-  for (let i=0;i<rows.length;i+=1) {
-    const row=rows[i];
-    if (!normalizeDateValue(row.date)) { showToast((i+1)+'번째 행의 날짜를 확인하세요.'); return; }
-    if (!row.boss) { showToast((i+1)+'번째 행의 보스를 선택하세요.'); return; }
-    if (!row.members.length) { showToast((i+1)+'번째 행의 참여자를 1명 이상 입력하세요.'); return; }
-    if (!row.item) { showToast((i+1)+'번째 행의 아이템명을 입력하세요.'); return; }
-    if (row.salePrice<=0) { showToast((i+1)+'번째 행의 판매가를 입력하세요.'); return; }
+  const editingId = $('#entryId').value;
+  const existing = editingId ? findEntry(editingId) : null;
+  const rows = getActiveBulkEntryRows();
+  if (!rows.length) { showToast('정산 항목과 금액을 1건 이상 입력하세요.'); return; }
+  if (existing && rows.length !== 1) { showToast('기존 정산 수정은 1건만 가능합니다.'); return; }
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    if (!normalizeDateValue(row.date)) { showToast((i + 1) + '번째 행의 날짜를 확인하세요.'); return; }
+    if (!row.boss) { showToast((i + 1) + '번째 행의 보스를 선택하세요.'); return; }
+    if (!row.members.length) { showToast((i + 1) + '번째 행의 참여자를 1명 이상 입력하세요.'); return; }
+    if (!row.item) { showToast((i + 1) + '번째 행의 아이템명을 입력하세요.'); return; }
+    if (row.salePrice <= 0) { showToast((i + 1) + '번째 행의 판매가/아이템 가치를 입력하세요.'); return; }
+    if (row.recipient && !row.members.includes(row.recipient)) { showToast((i + 1) + '번째 행의 아이템 수령자를 확인하세요.'); return; }
   }
-  const now=new Date().toISOString();
+
+  const now = new Date().toISOString();
+  const targetValue = $('#entryTargetGroup') ? $('#entryTargetGroup').value : '__new__';
+  const groupId = targetValue && targetValue !== '__new__'
+    ? targetValue
+    : (existing ? getEntryGroupId(existing) : makeGroupId());
+
   if (existing) {
-    const payload=buildBulkEntryPayload(rows[0],existing,now,existing.id);
-    Object.assign(existing,payload);
-    if (payload.status!=='done') selectedEntryIds.add(payload.id);
+    const payload = buildBulkEntryPayload(rows[0], existing, now, existing.id, groupId);
+    Object.assign(existing, payload);
+    if (payload.status !== 'done') selectedEntryIds.add(payload.id);
     showToast('정산을 수정했습니다.');
   } else {
-    const payloads=rows.map(function (row) { return buildBulkEntryPayload(row,null,now,''); });
-    state.entries.unshift.apply(state.entries,payloads);
+    const payloads = rows.map(function (row) { return buildBulkEntryPayload(row, null, now, '', groupId); });
+    state.entries.unshift.apply(state.entries, payloads);
     payloads.forEach(function (payload) { selectedEntryIds.add(payload.id); });
-    showToast(payloads.length+'건을 등록하고 자동 선택했습니다.');
+    showToast(payloads.length + '건을 같은 그룹으로 등록하고 자동 선택했습니다.');
   }
-  state.activeTab='waiting';
-  state.detailId=null;
+  state.activeTab = 'waiting';
+  state.detailId = null;
   saveState();
   $('#entryDialog').close();
   render();
 }
+
 function prunePayments(payments, members) {
   return Object.fromEntries(members.map((member) => [member, Boolean(payments[member])]));
 }
@@ -1205,35 +1271,36 @@ function isPendingEntry(entry) {
 function calculateEntry(entry) {
   const sale = entry?.sale || {};
   const salePrice = numberOrZero(sale.salePrice ?? entry?.expectedPrice);
+  const recipient = getEntryRecipient(entry);
   const feeMode = sale.feeMode || state.settings.feeMode;
   const feeValue = sale.feeValue ?? state.settings.feeValue;
   const excludeAmount = numberOrZero(sale.excludeAmount);
   const roundingMode = sale.roundingMode || state.settings.roundingMode;
-  const feeAmount = feeMode === 'percent' ? salePrice * (numberOrZero(feeValue) / 100) : numberOrZero(feeValue);
+  const feeAmount = recipient ? 0 : (feeMode === 'percent' ? salePrice * (numberOrZero(feeValue) / 100) : numberOrZero(feeValue));
   const netAmount = Math.max(0, salePrice - feeAmount - excludeAmount);
   const memberCount = entry?.members?.length || 0;
   const rawPerPerson = memberCount ? netAmount / memberCount : 0;
   const perPerson = applyRounding(rawPerPerson, roundingMode);
-
   const frozenRate = sale.completedCashRate ?? sale.cashRatePerBillion;
   const cashRatePerBillion = entry?.status === 'done'
     ? numberOrZero(frozenRate ?? state.settings.cashRatePerBillion)
     : numberOrZero(state.settings.cashRatePerBillion);
-
   const totalCash = roundWon(netAmount * cashRatePerBillion);
   const perPersonCash = roundWon(perPerson * cashRatePerBillion);
   return {
-    salePrice,
-    feeMode,
+    salePrice: salePrice,
+    feeMode: feeMode,
     feeValue: numberOrZero(feeValue),
-    feeAmount,
-    excludeAmount,
-    netAmount,
-    perPerson,
-    roundingMode,
-    cashRatePerBillion,
-    totalCash,
-    perPersonCash,
+    feeAmount: feeAmount,
+    excludeAmount: excludeAmount,
+    netAmount: netAmount,
+    perPerson: perPerson,
+    rawPerPerson: rawPerPerson,
+    roundingMode: roundingMode,
+    cashRatePerBillion: cashRatePerBillion,
+    totalCash: totalCash,
+    perPersonCash: perPersonCash,
+    recipient: recipient,
   };
 }
 
@@ -1242,30 +1309,15 @@ function getSelectedPendingEntries() {
 }
 
 function getBatchGroups(entries) {
-  const map = new Map();
-  entries.forEach((entry) => {
-    const members = Array.isArray(entry.members) ? entry.members : [];
-    const key = `${entry.date}::${members.join('\u0001')}`;
-    if (!map.has(key)) map.set(key, { date: entry.date, members, entries: [] });
-    map.get(key).entries.push(entry);
-  });
-  return [...map.values()];
+  return getStoredGroups(entries || []);
 }
 
 function getBatchSelectionSummary(entries) {
-  if (!entries.length) return '정산을 등록하면 자동으로 선택됩니다.';
-  const groups = getBatchGroups(entries);
-  if (groups.length !== 1) return `정산 그룹 ${groups.length}개 · 완료 후 한 문장으로 통합됩니다.`;
-
-  let totalMeso = 0;
-  let totalCash = 0;
-  entries.forEach((entry) => {
-    const calc = calculateEntry(entry);
-    totalMeso += calc.perPerson;
-    totalCash += calc.perPersonCash;
-  });
-  const cash = state.settings.cashRatePerBillion > 0 ? ` / ${formatWon(totalCash)}` : '';
-  return `1인 총 ${formatAmount(totalMeso)}${cash}`;
+  if (!entries.length) return '정산 그룹 또는 항목을 선택하세요.';
+  const expanded = getExpandedSelectedPendingEntries(entries);
+  const groupCount = getStoredGroups(expanded).length;
+  const total = expanded.reduce(function (sum, entry) { return sum + calculateEntry(entry).netAmount; }, 0);
+  return `${groupCount}그룹 · 완료 대상 ${expanded.length}건 · 총 가치 ${formatAmount(total)}`;
 }
 
 function selectAllPending() {
@@ -1279,30 +1331,22 @@ function clearPendingSelection() {
 }
 
 function completeSelectedBatch() {
-  const entries = getSelectedPendingEntries();
-  if (!entries.length) {
-    showToast('완료할 정산을 선택하세요.');
-    return;
-  }
-
-  const invalid = entries.find((entry) => calculateEntry(entry).salePrice <= 0);
-  if (invalid) {
-    showToast(`'${invalid.item}' 판매가를 확인하세요.`);
-    return;
-  }
+  const selected = getSelectedPendingEntries();
+  const entries = getExpandedSelectedPendingEntries(selected);
+  if (!entries.length) { showToast('완료할 정산 그룹을 선택하세요.'); return; }
+  const invalid = entries.find(function (entry) { return calculateEntry(entry).salePrice <= 0; });
+  if (invalid) { showToast("'" + invalid.item + "' 금액을 확인하세요."); return; }
 
   const completedAt = new Date().toISOString();
-  entries.forEach((entry) => {
+  entries.forEach(function (entry) {
     const calc = calculateEntry(entry);
-    entry.sale = {
-      ...(entry.sale || {}),
-      ...calc,
+    entry.sale = Object.assign({}, entry.sale || {}, calc, {
       cashRatePerBillion: calc.cashRatePerBillion,
       completedCashRate: calc.cashRatePerBillion,
-      completedAt,
-    };
+      completedAt: completedAt,
+    });
     entry.status = 'done';
-    entry.payments = Object.fromEntries((entry.members || []).map((member) => [member, true]));
+    entry.payments = Object.fromEntries((entry.members || []).map(function (member) { return [member, true]; }));
   });
 
   lastBatchShareText = buildBatchShareText(entries);
@@ -1311,7 +1355,7 @@ function completeSelectedBatch() {
   state.activeTab = 'done';
   state.detailId = null;
   saveState();
-  showToast(`${entries.length}건을 정산 완료했습니다. 통합 공유문을 만들었습니다.`);
+  showToast(getStoredGroups(entries).length + '개 그룹, ' + entries.length + '건을 정산 완료했습니다.');
   render();
 }
 
@@ -1330,41 +1374,295 @@ async function copyBatchShare() {
 }
 
 function buildBatchShareText(entries) {
-  const valid = (entries || []).filter(Boolean);
-  if (!valid.length) return '';
-
-  const groups = getBatchGroups(valid);
-  return groups.map((group) => {
+  const groups = getStoredGroups((entries || []).filter(Boolean));
+  if (!groups.length) return '';
+  return groups.map(function (group) {
+    const settlement = calculateGroupSettlement(group.entries);
+    const dates = Array.from(new Set(group.entries.map(function (entry) { return formatDate(entry.date); })));
+    const members = settlement.members;
+    const totalCash = group.entries.reduce(function (sum, entry) { return sum + calculateEntry(entry).totalCash; }, 0);
+    const hasCash = group.entries.some(function (entry) { return calculateEntry(entry).cashRatePerBillion > 0; });
     const lines = [
-      `정산 날짜: ${formatDate(group.date)}`,
-      `정산 인원: ${group.members.length}인`,
+      '정산 날짜: ' + dates.join(', '),
+      '정산 인원: ' + members.length + '인',
       '',
     ];
-
-    let totalMeso = 0;
-    let totalCash = 0;
-    let hasCash = false;
-
-    group.entries.forEach((entry, index) => {
+    group.entries.forEach(function (entry) {
       const calc = calculateEntry(entry);
-      totalMeso += calc.perPerson;
-      totalCash += calc.perPersonCash;
-      hasCash = hasCash || calc.cashRatePerBillion > 0;
-
-      lines.push(`${entry.boss} · ${entry.item}`);
-      lines.push(`정산 금액: ${formatAmount(calc.perPerson)}${calc.cashRatePerBillion > 0 ? ` / ${formatWon(calc.perPersonCash)}` : ''}`);
-      if (index < group.entries.length - 1) lines.push('');
-    });
-
-    if (group.entries.length > 1) {
+      const recipient = getEntryRecipient(entry);
+      lines.push(entry.boss + ' · ' + entry.item + (recipient ? ' (' + recipient + ' 수령)' : ''));
+      lines.push('정산 가치: ' + formatAmount(calc.netAmount) + ' · 1인 지분 ' + formatAmount(calc.rawPerPerson));
       lines.push('');
-      lines.push(`총합: ${formatAmount(totalMeso)}${hasCash ? ` / ${formatWon(totalCash)}` : ''}`);
+    });
+    lines.push('총합: ' + formatAmount(settlement.totalValue) + (hasCash ? ' / ' + formatWon(totalCash) : ''));
+    lines.push('');
+    lines.push('최종 정산');
+    if (settlement.transfers.length) {
+      settlement.transfers.forEach(function (transfer) {
+        const cash = settlement.cashRate > 0 ? ' / ' + formatWon(transfer.amount * settlement.cashRate) : '';
+        lines.push(transfer.from + ' → ' + transfer.to + ': ' + formatAmount(transfer.amount) + cash);
+      });
+    } else {
+      lines.push('추가 송금 없음');
     }
-
-    return lines.join('\n');
-  }).join('\n\n');
+    return lines.join('\n').replace(/\n{3,}/g, '\n\n');
+  }).join('\n\n────────\n\n');
 }
 
+function resolveItemCategory(raw, item) {
+  if (raw && raw !== '자동') return raw;
+  return String(item || '').includes('연마석') ? '연마석' : '물욕템';
+}
+
+function getEntryGroupId(entry) {
+  return entry?.sale?.groupId || ('legacy_' + entry.id);
+}
+
+function getEntryCategory(entry) {
+  if (entry?.sale?.category) return entry.sale.category;
+  return String(entry?.item || '').includes('연마석') ? '연마석' : '기타';
+}
+
+function getEntryRecipient(entry) {
+  const recipient = entry?.sale?.recipient || '';
+  return (entry?.members || []).includes(recipient) ? recipient : '';
+}
+
+function makeGroupId() {
+  return 'grp_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
+}
+
+function populateEntryGroupOptions(targetGroupId, entry) {
+  const select = $('#entryTargetGroup');
+  if (!select) return;
+  const groups = getStoredGroups(state.entries.filter(isPendingEntry));
+  const currentId = targetGroupId || (entry ? getEntryGroupId(entry) : '');
+  const options = ['<option value="__new__">새 그룹으로 등록</option>'].concat(groups.map(function (group) {
+    return '<option value="' + escapeHtml(group.id) + '">' + escapeHtml(getGroupLabel(group)) + '</option>';
+  }));
+  select.innerHTML = options.join('');
+  if (currentId && groups.some(function (group) { return group.id === currentId; })) select.value = currentId;
+  else select.value = '__new__';
+}
+
+function syncBulkEntryRecipientOptions(row) {
+  if (!row) return;
+  const members = splitMembers(((row.querySelector('[data-field="members"]') || {}).value || ''));
+  const select = row.querySelector('[data-field="recipient"]');
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = ['<option value="">판매 정산</option>'].concat(members.map(function (member) {
+    return '<option value="' + escapeHtml(member) + '">' + escapeHtml(member) + ' 수령</option>';
+  })).join('');
+  select.value = members.includes(current) ? current : '';
+}
+
+function getStoredGroups(entries) {
+  const map = new Map();
+  (entries || []).forEach(function (entry) {
+    const id = getEntryGroupId(entry);
+    if (!map.has(id)) map.set(id, { id: id, entries: [] });
+    map.get(id).entries.push(entry);
+  });
+  const groups = Array.from(map.values());
+  groups.forEach(function (group) { group.entries.sort(sortRecent); });
+  groups.sort(function (a, b) {
+    const aa = a.entries[0] || {};
+    const bb = b.entries[0] || {};
+    return (String(bb.date || '') + String(bb.createdAt || '')).localeCompare(String(aa.date || '') + String(aa.createdAt || ''));
+  });
+  return groups;
+}
+
+function getGroupLabel(group) {
+  const dates = Array.from(new Set(group.entries.map(function (entry) { return formatShortDate(entry.date); })));
+  const bosses = Array.from(new Set(group.entries.map(function (entry) { return entry.boss; })));
+  return dates.join(', ') + ' · ' + group.entries.length + '건 · ' + bosses.slice(0, 2).join(', ') + (bosses.length > 2 ? ' 외' : '');
+}
+
+function getExpandedSelectedPendingEntries(selected) {
+  const ids = new Set((selected || []).map(getEntryGroupId));
+  return state.entries.filter(function (entry) { return isPendingEntry(entry) && ids.has(getEntryGroupId(entry)); });
+}
+
+function calculateGroupSettlement(entries) {
+  const entitlement = {};
+  const received = {};
+  let totalValue = 0;
+  let cashRate = 0;
+  (entries || []).forEach(function (entry) {
+    const calc = calculateEntry(entry);
+    totalValue += calc.netAmount;
+    if (!cashRate && calc.cashRatePerBillion > 0) cashRate = calc.cashRatePerBillion;
+    const members = entry.members || [];
+    const share = members.length ? calc.netAmount / members.length : 0;
+    members.forEach(function (member) {
+      entitlement[member] = (entitlement[member] || 0) + share;
+      if (!(member in received)) received[member] = received[member] || 0;
+    });
+    const holder = getEntryRecipient(entry) || entry.sale?.sellerName || members[0] || '';
+    if (holder) received[holder] = (received[holder] || 0) + calc.netAmount;
+  });
+  const members = Array.from(new Set(Object.keys(entitlement).concat(Object.keys(received))));
+  const balances = {};
+  members.forEach(function (member) {
+    balances[member] = roundFloat((received[member] || 0) - (entitlement[member] || 0), 6);
+  });
+  const payers = members.filter(function (m) { return balances[m] > 0.0000001; }).map(function (m) { return { name: m, amount: balances[m] }; });
+  const receivers = members.filter(function (m) { return balances[m] < -0.0000001; }).map(function (m) { return { name: m, amount: -balances[m] }; });
+  const transfers = [];
+  let i = 0, j = 0;
+  while (i < payers.length && j < receivers.length) {
+    const amount = Math.min(payers[i].amount, receivers[j].amount);
+    if (amount > 0.0000001) transfers.push({ from: payers[i].name, to: receivers[j].name, amount: roundFloat(amount, 6) });
+    payers[i].amount -= amount;
+    receivers[j].amount -= amount;
+    if (payers[i].amount <= 0.0000001) i += 1;
+    if (receivers[j].amount <= 0.0000001) j += 1;
+  }
+  return { totalValue: roundFloat(totalValue, 6), members: members, entitlement: entitlement, received: received, balances: balances, transfers: transfers, cashRate: cashRate };
+}
+
+function pendingGroupCard(group) {
+  const settlement = calculateGroupSettlement(group.entries);
+  const allSelected = group.entries.every(function (entry) { return selectedEntryIds.has(entry.id); });
+  const itemRows = group.entries.map(function (entry) {
+    const calc = calculateEntry(entry);
+    const recipient = getEntryRecipient(entry);
+    return '<div class="group-item">' +
+      '<label class="group-item-check"><input type="checkbox" data-action="select-entry" data-id="' + escapeHtml(entry.id) + '"' + (selectedEntryIds.has(entry.id) ? ' checked' : '') + ' /></label>' +
+      '<div class="group-item-main"><b>' + escapeHtml(entry.boss) + ' · ' + escapeHtml(entry.item) + '</b>' +
+      '<span>' + escapeHtml(getEntryCategory(entry)) + ' · ' + formatAmount(calc.netAmount) + (recipient ? ' · ' + escapeHtml(recipient) + ' 수령' : ' · 판매 정산') + '</span></div>' +
+      '<button class="ghost small" data-action="edit-entry" data-id="' + escapeHtml(entry.id) + '">수정</button>' +
+      '</div>';
+  }).join('');
+  return '<section class="group-card">' +
+    '<div class="group-card-head"><label class="group-select"><input type="checkbox" data-action="select-group" data-group-id="' + escapeHtml(group.id) + '"' + (allSelected ? ' checked' : '') + ' /><span>' + escapeHtml(getGroupLabel(group)) + '</span></label>' +
+    '<span class="badge waiting">정산대기</span></div>' +
+    '<div class="group-total">그룹 총 가치 <b>' + formatAmount(settlement.totalValue) + '</b></div>' +
+    '<div class="group-items">' + itemRows + '</div>' +
+    '<div class="item-actions"><button class="secondary" data-action="add-to-group" data-group-id="' + escapeHtml(group.id) + '">+ 이 그룹에 추가</button>' +
+    '<button class="primary" data-action="complete-group" data-group-id="' + escapeHtml(group.id) + '">그룹 정산 완료</button></div>' +
+    '</section>';
+}
+
+function completedGroupCard(group) {
+  const settlement = calculateGroupSettlement(group.entries);
+  const itemRows = group.entries.map(function (entry) {
+    const calc = calculateEntry(entry);
+    const recipient = getEntryRecipient(entry);
+    return '<div class="group-item completed"><div class="group-item-main"><b>' + escapeHtml(entry.boss) + ' · ' + escapeHtml(entry.item) + '</b>' +
+      '<span>' + escapeHtml(getEntryCategory(entry)) + ' · ' + formatAmount(calc.netAmount) + (recipient ? ' · ' + escapeHtml(recipient) + ' 수령' : ' · 판매') + '</span></div></div>';
+  }).join('');
+  const transferRows = settlement.transfers.length
+    ? settlement.transfers.map(function (transfer) {
+        const cash = settlement.cashRate > 0 ? ' / ' + formatWon(transfer.amount * settlement.cashRate) : '';
+        return '<div class="transfer-row"><b>' + escapeHtml(transfer.from) + ' → ' + escapeHtml(transfer.to) + '</b><span>' + formatAmount(transfer.amount) + cash + '</span></div>';
+      }).join('')
+    : '<div class="transfer-row"><b>추가 송금 없음</b><span>상계 완료</span></div>';
+  return '<section class="group-card done-group">' +
+    '<div class="group-card-head"><div><b>' + escapeHtml(getGroupLabel(group)) + '</b><div class="item-sub">완료 그룹 · ' + group.entries.length + '건</div></div><span class="badge done">완료</span></div>' +
+    '<div class="group-total">그룹 총 가치 <b>' + formatAmount(settlement.totalValue) + '</b></div>' +
+    '<div class="group-items">' + itemRows + '</div>' +
+    '<div class="settlement-box"><h3>최종 정산</h3>' + transferRows + '</div>' +
+    '<div class="item-actions"><button class="secondary" data-action="copy-group-share" data-group-id="' + escapeHtml(group.id) + '">그룹 공유문 복사</button></div>' +
+    '</section>';
+}
+
+function completeGroup(groupId) {
+  const entries = state.entries.filter(function (entry) { return isPendingEntry(entry) && getEntryGroupId(entry) === groupId; });
+  if (!entries.length) return;
+  entries.forEach(function (entry) { selectedEntryIds.add(entry.id); });
+  completeSelectedBatch();
+}
+
+function moveSelectedToGroup() {
+  const target = $('#mergeTargetGroup')?.value || '';
+  const selected = getSelectedPendingEntries();
+  if (!target) { showToast('편입할 대상 그룹을 선택하세요.'); return; }
+  if (!selected.length) { showToast('편입할 항목을 선택하세요.'); return; }
+  selected.forEach(function (entry) {
+    entry.sale = entry.sale || {};
+    entry.sale.groupId = target;
+  });
+  selectedEntryIds.clear();
+  state.entries.filter(function (entry) { return isPendingEntry(entry) && getEntryGroupId(entry) === target; }).forEach(function (entry) { selectedEntryIds.add(entry.id); });
+  saveState();
+  showToast(selected.length + '건을 선택한 그룹에 편입했습니다.');
+  renderList();
+}
+
+async function copyGroupShare(groupId) {
+  const entries = state.entries.filter(function (entry) { return getEntryGroupId(entry) === groupId; });
+  const text = buildBatchShareText(entries);
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('그룹 공유문을 복사했습니다.');
+  } catch {
+    fallbackCopy(text);
+    showToast('그룹 공유문을 복사했습니다.');
+  }
+}
+
+function getMonthlySummary(monthKey) {
+  const monthEntries = state.entries.filter(function (entry) { return String(entry.date || '').startsWith(monthKey); });
+  const completed = monthEntries.filter(function (entry) { return entry.status === 'done'; });
+  const pending = monthEntries.filter(isPendingEntry);
+  const summary = {
+    monthKey: monthKey, completed: completed, pending: pending,
+    gross: 0, net: 0, pendingNet: 0, groups: getStoredGroups(completed).length,
+    memberShares: {}, memberCash: {}, categories: {}, bosses: {},
+  };
+  completed.forEach(function (entry) {
+    const calc = calculateEntry(entry);
+    summary.gross += calc.salePrice;
+    summary.net += calc.netAmount;
+    const share = entry.members.length ? calc.netAmount / entry.members.length : 0;
+    entry.members.forEach(function (member) {
+      summary.memberShares[member] = (summary.memberShares[member] || 0) + share;
+      summary.memberCash[member] = (summary.memberCash[member] || 0) + share * calc.cashRatePerBillion;
+    });
+    const category = getEntryCategory(entry);
+    if (!summary.categories[category]) summary.categories[category] = { name: category, count: 0, value: 0, items: [] };
+    summary.categories[category].count += 1;
+    summary.categories[category].value += calc.netAmount;
+    summary.categories[category].items.push(entry.item);
+    if (!summary.bosses[entry.boss]) summary.bosses[entry.boss] = { boss: entry.boss, count: 0, value: 0, desireCount: 0, items: [] };
+    summary.bosses[entry.boss].count += 1;
+    summary.bosses[entry.boss].value += calc.netAmount;
+    if (category === '물욕템') summary.bosses[entry.boss].desireCount += 1;
+    summary.bosses[entry.boss].items.push(entry.item + (getEntryRecipient(entry) ? ' (' + getEntryRecipient(entry) + ' 수령)' : ''));
+  });
+  pending.forEach(function (entry) { summary.pendingNet += calculateEntry(entry).netAmount; });
+  summary.gross = roundFloat(summary.gross, 6);
+  summary.net = roundFloat(summary.net, 6);
+  summary.pendingNet = roundFloat(summary.pendingNet, 6);
+  return summary;
+}
+
+function renderMonthlySummary(monthKey) {
+  const summary = getMonthlySummary(monthKey);
+  const memberRows = Object.keys(summary.memberShares).sort().map(function (member) {
+    const cash = summary.memberCash[member] > 0 ? ' / ' + formatWon(summary.memberCash[member]) : '';
+    return '<div class="summary-row"><b>' + escapeHtml(member) + '</b><span>' + formatAmount(summary.memberShares[member]) + cash + '</span></div>';
+  }).join('');
+  const categoryRows = Object.values(summary.categories).sort(function (a,b) { return b.value-a.value; }).map(function (category) {
+    return '<div class="summary-chip"><b>' + escapeHtml(category.name) + '</b><span>' + category.count + '건 · ' + formatAmount(category.value) + '</span></div>';
+  }).join('');
+  const bossRows = Object.values(summary.bosses).sort(function (a,b) { return b.value-a.value; }).map(function (boss) {
+    return '<div class="boss-summary-row"><div><b>' + escapeHtml(boss.boss) + '</b><span>' + boss.count + '건 · 물욕 ' + boss.desireCount + '건 · ' + formatAmount(boss.value) + '</span></div><p>' + boss.items.map(escapeHtml).join(', ') + '</p></div>';
+  }).join('');
+  return '<section class="card monthly-summary">' +
+    '<div class="section-title monthly-title"><h2>월별 서머리</h2><input id="summaryMonth" type="month" value="' + escapeHtml(monthKey) + '" /></div>' +
+    '<div class="monthly-stats"><div class="stat"><span>총 발생 가치</span><b>' + formatAmount(summary.gross) + '</b></div>' +
+    '<div class="stat"><span>순 정산 가치</span><b>' + formatAmount(summary.net) + '</b></div>' +
+    '<div class="stat"><span>대기 중 가치</span><b>' + formatAmount(summary.pendingNet) + '</b></div>' +
+    '<div class="stat"><span>완료 그룹</span><b>' + summary.groups + '</b></div></div>' +
+    '<div class="summary-section"><h3>멤버별 나눠가진 지분</h3>' + (memberRows || '<p class="item-sub">완료된 정산이 없습니다.</p>') + '</div>' +
+    '<div class="summary-section"><h3>카테고리</h3><div class="summary-chips">' + (categoryRows || '<span class="item-sub">기록 없음</span>') + '</div></div>' +
+    '<div class="summary-section"><h3>보스별 드랍 / 물욕</h3>' + (bossRows || '<p class="item-sub">기록 없음</p>') + '</div>' +
+    '</section>';
+}
 
 function saveRules() {
   state.settings.feeMode = $('#settingFeeMode').value;
@@ -1519,10 +1817,12 @@ function sortRecent(a, b) { return `${b.date}${b.createdAt}`.localeCompare(`${a.
 function filterEntries(entries, keyword) {
   const q = keyword.trim().toLowerCase();
   if (!q) return entries;
-  return entries.filter((entry) => [entry.boss, entry.item, entry.partyName, entry.members.join(' '), entry.memo]
-    .join(' ')
-    .toLowerCase()
-    .includes(q));
+  return entries.filter(function (entry) {
+    return [
+      entry.boss, entry.item, entry.partyName, entry.members.join(' '), entry.memo,
+      getEntryCategory(entry), getEntryRecipient(entry), getEntryGroupId(entry)
+    ].join(' ').toLowerCase().includes(q);
+  });
 }
 
 function splitMembers(text) {
