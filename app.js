@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.2.0';
+const APP_VERSION = '5.2.1';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 
 const statusMap = {
@@ -1415,7 +1415,9 @@ function resolveItemCategory(raw, item) {
 }
 
 function getEntryGroupId(entry) {
-  return entry?.sale?.groupId || ('legacy_' + entry.id);
+  if (entry?.sale?.groupId) return entry.sale.groupId;
+  if (entry?.createdAt) return 'legacy_batch_' + String(entry.createdAt).replace(/[^0-9A-Za-z]/g, '');
+  return 'legacy_' + entry.id;
 }
 
 function getEntryCategory(entry) {
