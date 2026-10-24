@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.2.1';
+const APP_VERSION = '5.3.0';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 
 const statusMap = {
@@ -1642,28 +1642,148 @@ function getMonthlySummary(monthKey) {
   return summary;
 }
 
+
+function getRecentMonthKeys(baseMonthKey, count = 6) {
+  const [year, month] = String(baseMonthKey || '').split('-').map(Number);
+  const now = new Date();
+  const base = new Date(year || now.getFullYear(), (month || (now.getMonth() + 1)) - 1, 1);
+  const result = [];
+  for (let i = count - 1; i >= 0; i -= 1) {
+    const d = new Date(base.getFullYear(), base.getMonth() - i, 1);
+    result.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'));
+  }
+  return result;
+}
+
+function getMonthlyTrend(monthKey, count = 6) {
+  return getRecentMonthKeys(monthKey, count).map(function (key) {
+    const summary = getMonthlySummary(key);
+    return {
+      key,
+      label: Number(key.slice(5)) + '월',
+      gross: summary.gross || 0,
+      net: summary.net || 0,
+      pending: summary.pendingNet || 0,
+    };
+  });
+}
+
+function renderTrendChart(monthKey) {
+  const trend = getMonthlyTrend(monthKey, 6);
+  const values = trend.reduce(function (acc, item) {
+    return acc.concat([item.gross, item.net, item.pending]);
+  }, [1]);
+  const maxValue = Math.max.apply(null, values);
+
+  const columns = trend.map(function (item) {
+    function height(value) {
+      if (value <= 0) return 0;
+      return Math.max(5, (value / maxValue) * 100);
+    }
+    return '<div class="trend-group">' +
+      '<div class="trend-bars">' +
+        '<div class="trend-bar trend-gross" style="height:' + height(item.gross) + '%" title="총 발생 ' + escapeHtml(formatAmount(item.gross)) + '"></div>' +
+        '<div class="trend-bar trend-net" style="height:' + height(item.net) + '%" title="순 정산 ' + escapeHtml(formatAmount(item.net)) + '"></div>' +
+        '<div class="trend-bar trend-pending" style="height:' + height(item.pending) + '%" title="대기 ' + escapeHtml(formatAmount(item.pending)) + '"></div>' +
+      '</div>' +
+      '<span>' + escapeHtml(item.label) + '</span>' +
+    '</div>';
+  }).join('');
+
+  return '<section class="chart-panel chart-wide">' +
+    '<div class="chart-head"><div><small>MONTHLY TREND</small><h3>최근 6개월 정산 추이</h3></div><span>억 단위</span></div>' +
+    '<div class="trend-chart">' + columns + '</div>' +
+    '<div class="chart-legend">' +
+      '<span><i class="chart-dot trend-gross"></i>총 발생</span>' +
+      '<span><i class="chart-dot trend-net"></i>순 정산</span>' +
+      '<span><i class="chart-dot trend-pending"></i>대기</span>' +
+    '</div>' +
+  '</section>';
+}
+
+function renderCategoryDonut(summary) {
+  const colors = { '물욕템':'#ffb347', '연마석':'#62c6ff', '기타':'#9aa5b5' };
+  const items = Object.values(summary.categories || {}).sort(function (a, b) { return b.value - a.value; });
+  const total = items.reduce(function (sum, item) { return sum + numberOrZero(item.value); }, 0);
+  let cursor = 0;
+  const segments = items.map(function (item) {
+    const start = cursor;
+    cursor += total > 0 ? numberOrZero(item.value) / total * 360 : 0;
+    return (colors[item.name] || '#b28cff') + ' ' + start + 'deg ' + cursor + 'deg';
+  });
+  const background = total > 0 ? 'conic-gradient(' + segments.join(',') + ')' : 'conic-gradient(#2a3242 0deg 360deg)';
+  const rows = items.length ? items.map(function (item) {
+    const pct = total > 0 ? Math.round(numberOrZero(item.value) / total * 100) : 0;
+    return '<div class="donut-row">' +
+      '<div><i class="chart-dot" style="background:' + (colors[item.name] || '#b28cff') + '"></i><b>' + escapeHtml(item.name) + '</b></div>' +
+      '<span>' + item.count + '건 · ' + pct + '% · ' + formatAmount(item.value) + '</span>' +
+    '</div>';
+  }).join('') : '<p class="item-sub">완료된 정산 기록이 없습니다.</p>';
+
+  return '<section class="chart-panel">' +
+    '<div class="chart-head"><div><small>CATEGORY</small><h3>아이템 카테고리</h3></div><span>완료 기준</span></div>' +
+    '<div class="donut-layout">' +
+      '<div class="donut-chart" style="background:' + background + '"><div class="donut-hole"><b>' + formatAmount(total) + '</b><span>총 가치</span></div></div>' +
+      '<div class="donut-legend">' + rows + '</div>' +
+    '</div>' +
+  '</section>';
+}
+
+function renderBossRanking(summary) {
+  const bosses = Object.values(summary.bosses || {}).sort(function (a, b) { return b.value - a.value; }).slice(0, 5);
+  const maxValue = Math.max.apply(null, [1].concat(bosses.map(function (boss) { return boss.value; })));
+  const rows = bosses.length ? bosses.map(function (boss, index) {
+    const width = Math.max(4, boss.value / maxValue * 100);
+    return '<div class="rank-row">' +
+      '<div class="rank-head"><div><b>' + (index + 1) + '. ' + escapeHtml(boss.boss) + '</b><span>' + boss.count + '건 · 물욕 ' + boss.desireCount + '건</span></div><strong>' + formatAmount(boss.value) + '</strong></div>' +
+      '<div class="rank-track"><div class="rank-fill" style="width:' + width + '%"></div></div>' +
+      '<p>' + boss.items.map(escapeHtml).join(', ') + '</p>' +
+    '</div>';
+  }).join('') : '<p class="item-sub">완료된 정산 기록이 없습니다.</p>';
+
+  return '<section class="chart-panel">' +
+    '<div class="chart-head"><div><small>BOSS TOP 5</small><h3>보스별 드랍 가치</h3></div><span>상위 5개</span></div>' +
+    '<div class="rank-list">' + rows + '</div>' +
+  '</section>';
+}
+
+function renderMemberShareChart(summary) {
+  const members = Object.keys(summary.memberShares || {}).map(function (name) {
+    return { name, value: summary.memberShares[name] || 0, cash: summary.memberCash[name] || 0 };
+  }).sort(function (a, b) { return b.value - a.value; });
+  const maxValue = Math.max.apply(null, [1].concat(members.map(function (member) { return member.value; })));
+  const rows = members.length ? members.map(function (member) {
+    const width = Math.max(4, member.value / maxValue * 100);
+    return '<div class="member-chart-row">' +
+      '<div class="member-chart-head"><b>' + escapeHtml(member.name) + '</b><span>' + formatAmount(member.value) + (member.cash > 0 ? ' / ' + formatWon(member.cash) : '') + '</span></div>' +
+      '<div class="member-track"><div class="member-fill" style="width:' + width + '%"></div></div>' +
+    '</div>';
+  }).join('') : '<p class="item-sub">완료된 정산 기록이 없습니다.</p>';
+
+  return '<section class="chart-panel">' +
+    '<div class="chart-head"><div><small>MEMBER SHARE</small><h3>멤버별 나눠가진 지분</h3></div><span>완료 기준</span></div>' +
+    '<div class="member-chart-list">' + rows + '</div>' +
+  '</section>';
+}
+
+
 function renderMonthlySummary(monthKey) {
   const summary = getMonthlySummary(monthKey);
-  const memberRows = Object.keys(summary.memberShares).sort().map(function (member) {
-    const cash = summary.memberCash[member] > 0 ? ' / ' + formatWon(summary.memberCash[member]) : '';
-    return '<div class="summary-row"><b>' + escapeHtml(member) + '</b><span>' + formatAmount(summary.memberShares[member]) + cash + '</span></div>';
-  }).join('');
-  const categoryRows = Object.values(summary.categories).sort(function (a,b) { return b.value-a.value; }).map(function (category) {
-    return '<div class="summary-chip"><b>' + escapeHtml(category.name) + '</b><span>' + category.count + '건 · ' + formatAmount(category.value) + '</span></div>';
-  }).join('');
-  const bossRows = Object.values(summary.bosses).sort(function (a,b) { return b.value-a.value; }).map(function (boss) {
-    return '<div class="boss-summary-row"><div><b>' + escapeHtml(boss.boss) + '</b><span>' + boss.count + '건 · 물욕 ' + boss.desireCount + '건 · ' + formatAmount(boss.value) + '</span></div><p>' + boss.items.map(escapeHtml).join(', ') + '</p></div>';
-  }).join('');
   return '<section class="card monthly-summary">' +
-    '<div class="section-title monthly-title"><h2>월별 서머리</h2><input id="summaryMonth" type="month" value="' + escapeHtml(monthKey) + '" /></div>' +
-    '<div class="monthly-stats"><div class="stat"><span>총 발생 가치</span><b>' + formatAmount(summary.gross) + '</b></div>' +
-    '<div class="stat"><span>순 정산 가치</span><b>' + formatAmount(summary.net) + '</b></div>' +
-    '<div class="stat"><span>대기 중 가치</span><b>' + formatAmount(summary.pendingNet) + '</b></div>' +
-    '<div class="stat"><span>완료 그룹</span><b>' + summary.groups + '</b></div></div>' +
-    '<div class="summary-section"><h3>멤버별 나눠가진 지분</h3>' + (memberRows || '<p class="item-sub">완료된 정산이 없습니다.</p>') + '</div>' +
-    '<div class="summary-section"><h3>카테고리</h3><div class="summary-chips">' + (categoryRows || '<span class="item-sub">기록 없음</span>') + '</div></div>' +
-    '<div class="summary-section"><h3>보스별 드랍 / 물욕</h3>' + (bossRows || '<p class="item-sub">기록 없음</p>') + '</div>' +
-    '</section>';
+    '<div class="section-title monthly-title"><div><h2>월별 서머리</h2><span class="sub">정산 기록을 그래프로 한눈에 확인합니다.</span></div><input id="summaryMonth" type="month" value="' + escapeHtml(monthKey) + '" /></div>' +
+    '<div class="monthly-kpis">' +
+      '<div class="summary-kpi kpi-gross"><span>총 발생 가치</span><b>' + formatAmount(summary.gross) + '</b></div>' +
+      '<div class="summary-kpi kpi-net"><span>순 정산 가치</span><b>' + formatAmount(summary.net) + '</b></div>' +
+      '<div class="summary-kpi kpi-pending"><span>대기 중 가치</span><b>' + formatAmount(summary.pendingNet) + '</b></div>' +
+      '<div class="summary-kpi kpi-groups"><span>완료 그룹</span><b>' + summary.groups + '</b></div>' +
+    '</div>' +
+    '<div class="summary-chart-grid">' +
+      renderTrendChart(monthKey) +
+      renderCategoryDonut(summary) +
+      renderBossRanking(summary) +
+      renderMemberShareChart(summary) +
+    '</div>' +
+  '</section>';
 }
 
 function saveRules() {
