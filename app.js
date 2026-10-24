@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.3.1';
+const APP_VERSION = '5.3.2';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 
 const statusMap = {
@@ -382,6 +382,7 @@ function updateNav() {
 function renderHome() {
   const currentMonth = dateToYmd(new Date()).slice(0, 7);
   const summaryMonth = sessionStorage.getItem('bossSplit.summaryMonth') || currentMonth;
+  const summaryScope = sessionStorage.getItem('bossSplit.summaryScope') || 'month';
   const monthEntries = state.entries.filter(function (e) { return e.date.startsWith(currentMonth); });
   const pending = state.entries.filter(isPendingEntry).length;
   const doneThisMonth = monthEntries.filter(function (e) { return e.status === 'done'; }).length;
@@ -397,7 +398,7 @@ function renderHome() {
       <button class="big-action" data-action="new-entry">+ 정산 등록</button>
     </section>
 
-    ${renderMonthlySummary(summaryMonth)}
+    ${renderMonthlySummary(summaryMonth, summaryScope)}
 
     <div class="section-title">
       <h2>최근 정산</h2>
@@ -408,6 +409,13 @@ function renderHome() {
 
   $('#summaryMonth')?.addEventListener('change', function (event) {
     sessionStorage.setItem('bossSplit.summaryMonth', event.target.value);
+    sessionStorage.setItem('bossSplit.summaryScope', 'month');
+    renderHome();
+  });
+
+  $('#summaryScopeToggle')?.addEventListener('click', function () {
+    const currentScope = sessionStorage.getItem('bossSplit.summaryScope') || 'month';
+    sessionStorage.setItem('bossSplit.summaryScope', currentScope === 'all' ? 'month' : 'all');
     renderHome();
   });
 }
@@ -1607,7 +1615,10 @@ async function copyGroupShare(groupId) {
 }
 
 function getMonthlySummary(monthKey) {
-  const monthEntries = state.entries.filter(function (entry) { return String(entry.date || '').startsWith(monthKey); });
+  const isAll = monthKey === '__all__';
+  const monthEntries = isAll
+    ? state.entries.slice()
+    : state.entries.filter(function (entry) { return String(entry.date || '').startsWith(monthKey); });
   const completed = monthEntries.filter(function (entry) { return entry.status === 'done'; });
   const pending = monthEntries.filter(isPendingEntry);
   const summary = {
@@ -1641,7 +1652,6 @@ function getMonthlySummary(monthKey) {
   summary.pendingNet = roundFloat(summary.pendingNet, 6);
   return summary;
 }
-
 
 function getRecentMonthKeys(baseMonthKey, count = 6) {
   const [year, month] = String(baseMonthKey || '').split('-').map(Number);
@@ -1767,10 +1777,18 @@ function renderMemberShareChart(summary) {
 }
 
 
-function renderMonthlySummary(monthKey) {
-  const summary = getMonthlySummary(monthKey);
+function renderMonthlySummary(monthKey, scope = 'month') {
+  const isAll = scope === 'all';
+  const summary = getMonthlySummary(isAll ? '__all__' : monthKey);
+  const scopeText = isAll ? '전체 누적' : monthKey.replace('-', '년 ') + '월';
   return '<section class="card monthly-summary">' +
-    '<div class="section-title monthly-title"><div><h2>월별 서머리</h2><span class="sub">정산 기록을 그래프로 한눈에 확인합니다.</span></div><input id="summaryMonth" type="month" value="' + escapeHtml(monthKey) + '" /></div>' +
+    '<div class="section-title monthly-title">' +
+      '<div><h2>월별 서머리</h2><span class="sub">' + escapeHtml(scopeText) + ' · 정산 기록을 그래프로 한눈에 확인합니다.</span></div>' +
+      '<div class="summary-controls">' +
+        '<input id="summaryMonth" type="month" value="' + escapeHtml(monthKey) + '" aria-label="서머리 월 선택" />' +
+        '<button type="button" id="summaryScopeToggle" class="' + (isAll ? 'primary' : 'secondary') + ' summary-all-btn">' + (isAll ? '월별 보기' : '전체 보기') + '</button>' +
+      '</div>' +
+    '</div>' +
     '<div class="monthly-kpis">' +
       '<div class="summary-kpi kpi-gross"><span>총 발생 가치</span><b>' + formatAmount(summary.gross) + '</b></div>' +
       '<div class="summary-kpi kpi-net"><span>순 정산 가치</span><b>' + formatAmount(summary.net) + '</b></div>' +

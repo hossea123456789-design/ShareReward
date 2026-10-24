@@ -953,3 +953,46 @@ input:focus, textarea:focus, select:focus { border-color: rgba(255, 190, 61, 0.8
 .member-fill {
   min-height: 100%;
 }
+
+/* v5.3.2 summary scope controls + visible calendar icon */
+.summary-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+#summaryMonth {
+  width: auto;
+  min-width: 148px;
+  color-scheme: dark;
+  background: #10141d;
+  color: var(--text);
+}
+#summaryMonth::-webkit-calendar-picker-indicator {
+  filter: invert(1) brightness(1.8);
+  opacity: .9;
+  cursor: pointer;
+}
+#summaryMonth::-webkit-datetime-edit,
+#summaryMonth::-webkit-datetime-edit-fields-wrapper,
+#summaryMonth::-webkit-datetime-edit-text,
+#summaryMonth::-webkit-datetime-edit-month-field,
+#summaryMonth::-webkit-datetime-edit-year-field {
+  color: var(--text);
+}
+.summary-all-btn {
+  min-height: 38px;
+  white-space: nowrap;
+}
+@media (max-width: 560px) {
+  .summary-controls {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr auto;
+  }
+  #summaryMonth {
+    width: 100%;
+    min-width: 0;
+  }
+}
