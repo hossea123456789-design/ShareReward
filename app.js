@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.3.0';
+const APP_VERSION = '5.3.1';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 
 const statusMap = {
@@ -1682,9 +1682,9 @@ function renderTrendChart(monthKey) {
     }
     return '<div class="trend-group">' +
       '<div class="trend-bars">' +
-        '<div class="trend-bar trend-gross" style="height:' + height(item.gross) + '%" title="총 발생 ' + escapeHtml(formatAmount(item.gross)) + '"></div>' +
-        '<div class="trend-bar trend-net" style="height:' + height(item.net) + '%" title="순 정산 ' + escapeHtml(formatAmount(item.net)) + '"></div>' +
-        '<div class="trend-bar trend-pending" style="height:' + height(item.pending) + '%" title="대기 ' + escapeHtml(formatAmount(item.pending)) + '"></div>' +
+        '<div class="trend-bar trend-gross chart-tooltip" style="height:' + height(item.gross) + '%" data-tooltip="' + escapeHtml(item.label + ' · 총 발생 ' + formatAmount(item.gross)) + '" aria-label="' + escapeHtml(item.label + ' 총 발생 ' + formatAmount(item.gross)) + '"></div>' +
+        '<div class="trend-bar trend-net chart-tooltip" style="height:' + height(item.net) + '%" data-tooltip="' + escapeHtml(item.label + ' · 순 정산 ' + formatAmount(item.net)) + '" aria-label="' + escapeHtml(item.label + ' 순 정산 ' + formatAmount(item.net)) + '"></div>' +
+        '<div class="trend-bar trend-pending chart-tooltip" style="height:' + height(item.pending) + '%" data-tooltip="' + escapeHtml(item.label + ' · 대기 ' + formatAmount(item.pending)) + '" aria-label="' + escapeHtml(item.label + ' 대기 ' + formatAmount(item.pending)) + '"></div>' +
       '</div>' +
       '<span>' + escapeHtml(item.label) + '</span>' +
     '</div>';
@@ -1736,7 +1736,7 @@ function renderBossRanking(summary) {
     const width = Math.max(4, boss.value / maxValue * 100);
     return '<div class="rank-row">' +
       '<div class="rank-head"><div><b>' + (index + 1) + '. ' + escapeHtml(boss.boss) + '</b><span>' + boss.count + '건 · 물욕 ' + boss.desireCount + '건</span></div><strong>' + formatAmount(boss.value) + '</strong></div>' +
-      '<div class="rank-track"><div class="rank-fill" style="width:' + width + '%"></div></div>' +
+      '<div class="rank-track chart-tooltip" data-tooltip="' + escapeHtml(boss.boss + ' · ' + formatAmount(boss.value) + ' · 드랍 ' + boss.count + '건 · 물욕 ' + boss.desireCount + '건') + '"><div class="rank-fill" style="width:' + width + '%"></div></div>' +
       '<p>' + boss.items.map(escapeHtml).join(', ') + '</p>' +
     '</div>';
   }).join('') : '<p class="item-sub">완료된 정산 기록이 없습니다.</p>';
@@ -1756,7 +1756,7 @@ function renderMemberShareChart(summary) {
     const width = Math.max(4, member.value / maxValue * 100);
     return '<div class="member-chart-row">' +
       '<div class="member-chart-head"><b>' + escapeHtml(member.name) + '</b><span>' + formatAmount(member.value) + (member.cash > 0 ? ' / ' + formatWon(member.cash) : '') + '</span></div>' +
-      '<div class="member-track"><div class="member-fill" style="width:' + width + '%"></div></div>' +
+      '<div class="member-track chart-tooltip" data-tooltip="' + escapeHtml(member.name + ' · 지분 ' + formatAmount(member.value) + (member.cash > 0 ? ' · ' + formatWon(member.cash) : '')) + '"><div class="member-fill" style="width:' + width + '%"></div></div>' +
     '</div>';
   }).join('') : '<p class="item-sub">완료된 정산 기록이 없습니다.</p>';
 
@@ -1990,7 +1990,7 @@ function formatWon(value) {
 }
 
 function trimDecimal(num) {
-  return Number(num).toLocaleString('ko-KR', { maximumFractionDigits: 6 });
+  return Number(num).toLocaleString('ko-KR', { maximumFractionDigits: 2 });
 }
 
 function normalizeDateValue(value) {
