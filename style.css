@@ -1045,3 +1045,63 @@ input:focus, textarea:focus, select:focus { border-color: rgba(255, 190, 61, 0.8
     grid-column: 2;
   }
 }
+
+/* v5.4.2 explicit direct-receipt settlement explanation */
+.receipt-indicator {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 5px;
+}
+.recipient-chip,
+.sale-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 900;
+}
+.recipient-chip {
+  color: #16100a;
+  background: linear-gradient(135deg, #ffd166, #ff9f43);
+  border: 1px solid rgba(255,209,102,.5);
+}
+.sale-chip {
+  color: #b8c4d4;
+  background: rgba(90,167,255,.10);
+  border: 1px solid rgba(90,167,255,.18);
+}
+.recipient-summary-box {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(255, 177, 66, .07);
+  border: 1px solid rgba(255, 177, 66, .2);
+}
+.recipient-summary-box h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #ffd166;
+}
+.recipient-summary-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 9px;
+  align-items: center;
+  padding: 7px 0;
+  border-top: 1px solid rgba(255,255,255,.055);
+}
+.recipient-summary-row:first-of-type {
+  border-top: 0;
+}
+.recipient-summary-row span {
+  color: #ffd166;
+  font-size: 11px;
+  font-weight: 900;
+}
+.recipient-summary-row b {
+  text-align: right;
+  font-size: 11px;
+}

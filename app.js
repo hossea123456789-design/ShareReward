@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.4.1';
+const APP_VERSION = '5.4.2';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 const MAPLE_ITEM_DB = Array.isArray(window.MAPLE_ITEM_DB) ? window.MAPLE_ITEM_DB : [];
 const MAPLE_ITEM_CATEGORIES = ['자동', '광휘의 보스 장신구', '칠흑의 보스 장신구', '여명의 보스 장신구', '보스 장신구', '에테르넬 장비', '아케인셰이드 장비', '앱솔랩스 장비', '루타비스 장비', '연마석', '익셉셔널 해머', '기타'];
@@ -1464,39 +1464,92 @@ async function copyBatchShare() {
 function buildBatchShareText(entries) {
   const groups = getStoredGroups((entries || []).filter(Boolean));
   if (!groups.length) return '';
+
   return groups.map(function (group) {
     const settlement = calculateGroupSettlement(group.entries);
     const dates = Array.from(new Set(group.entries.map(function (entry) { return formatDate(entry.date); })));
     const members = settlement.members;
-    const totalCash = group.entries.reduce(function (sum, entry) { return sum + calculateEntry(entry).totalCash; }, 0);
-    const hasCash = group.entries.some(function (entry) { return calculateEntry(entry).cashRatePerBillion > 0; });
+    const recipients = group.entries.filter(function (entry) { return Boolean(getEntryRecipient(entry)); });
+    const sameRate = !settlement.mixedCashRates && settlement.cashRate > 0;
+
     const lines = [
       '정산 날짜: ' + dates.join(', '),
       '정산 인원: ' + members.length + '인',
       '',
     ];
+
     group.entries.forEach(function (entry) {
       const calc = calculateEntry(entry);
       const recipient = getEntryRecipient(entry);
-      lines.push(entry.boss + ' · ' + entry.item + (recipient ? ' (' + recipient + ' 수령)' : ''));
-      lines.push('정산 가치: ' + formatAmount(calc.netAmount) + ' · 1인 지분 ' + formatAmount(calc.rawPerPerson));
+
+      if (recipient) {
+        lines.push('🎁 [직접 수령] ' + entry.boss + ' · ' + entry.item);
+        lines.push(recipient + ' 수령 · 아이템 가치 ' + formatAmount(calc.netAmount) + ' · 경매장 수수료 미적용');
+        lines.push('1인 기본 지분: ' + formatAmount(calc.rawPerPerson));
+      } else {
+        lines.push('💰 [판매 정산] ' + entry.boss + ' · ' + entry.item);
+        lines.push('정산 가치: ' + formatAmount(calc.netAmount) + ' · 1인 지분 ' + formatAmount(calc.rawPerPerson));
+      }
       lines.push('');
     });
-    lines.push('총합: ' + formatAmount(settlement.totalValue) + (hasCash ? ' / ' + formatWon(totalCash) : ''));
+
+    lines.push('총 정산 가치: ' + formatAmount(settlement.totalValue));
+    if (sameRate) {
+      lines.push('현금 환산 기준: 억당 ' + formatWon(settlement.cashRate) + ' · 총 ' + formatWon(settlement.totalValue * settlement.cashRate));
+    } else if (settlement.mixedCashRates) {
+      lines.push('현금 환산: 완료 시세가 서로 달라 메소 기준으로 계산');
+    }
     lines.push('');
+
+    lines.push('정산 계산 근거');
+    members.forEach(function (member) {
+      const share = numberOrZero(settlement.entitlement[member]);
+      const sale = numberOrZero(settlement.saleHeld[member]);
+      const direct = numberOrZero(settlement.directReceived[member]);
+      const held = numberOrZero(settlement.received[member]);
+      const balance = numberOrZero(settlement.balances[member]);
+
+      lines.push('- ' + member + ': 받을 지분 ' + formatAmount(share));
+      if (sale > 0) lines.push('  · 판매대금 보유 ' + formatAmount(sale));
+      if (direct > 0) lines.push('  · 직접 수령 아이템 ' + formatAmount(direct));
+      if (held <= 0) lines.push('  · 이미 받은 가치 0억');
+
+      if (balance > 0.0000001) {
+        lines.push('  → 보유 ' + formatAmount(held) + ' - 지분 ' + formatAmount(share) + ' = ' + formatAmount(balance) + ' 전달해야 함');
+      } else if (balance < -0.0000001) {
+        lines.push('  → 지분 ' + formatAmount(share) + ' - 보유 ' + formatAmount(held) + ' = ' + formatAmount(Math.abs(balance)) + ' 받아야 함');
+      } else {
+        lines.push('  → 보유 가치와 지분이 같아 추가 정산 없음');
+      }
+    });
+
+    lines.push('');
+    if (recipients.length) {
+      lines.push('직접 수령 반영');
+      recipients.forEach(function (entry) {
+        const calc = calculateEntry(entry);
+        const recipient = getEntryRecipient(entry);
+        lines.push('- ' + recipient + ': ' + entry.item + ' ' + formatAmount(calc.netAmount) + ' 이미 수령');
+      });
+      lines.push('');
+    } else {
+      lines.push('직접 수령 반영: 없음');
+      lines.push('');
+    }
+
     lines.push('최종 정산');
     if (settlement.transfers.length) {
       settlement.transfers.forEach(function (transfer) {
-        const cash = settlement.cashRate > 0 ? ' / ' + formatWon(transfer.amount * settlement.cashRate) : '';
+        const cash = sameRate ? ' / ' + formatWon(transfer.amount * settlement.cashRate) : '';
         lines.push(transfer.from + ' → ' + transfer.to + ': ' + formatAmount(transfer.amount) + cash);
       });
     } else {
       lines.push('추가 송금 없음');
     }
+
     return lines.join('\n').replace(/\n{3,}/g, '\n\n');
   }).join('\n\n────────\n\n');
 }
-
 
 function normalizeMapleItemText(value) {
   return String(value || '')
@@ -1711,39 +1764,77 @@ function getExpandedSelectedPendingEntries(selected) {
 function calculateGroupSettlement(entries) {
   const entitlement = {};
   const received = {};
+  const directReceived = {};
+  const saleHeld = {};
   let totalValue = 0;
-  let cashRate = 0;
+  const rates = [];
+
   (entries || []).forEach(function (entry) {
     const calc = calculateEntry(entry);
     totalValue += calc.netAmount;
-    if (!cashRate && calc.cashRatePerBillion > 0) cashRate = calc.cashRatePerBillion;
+    if (calc.cashRatePerBillion > 0) rates.push(calc.cashRatePerBillion);
+
     const members = entry.members || [];
     const share = members.length ? calc.netAmount / members.length : 0;
     members.forEach(function (member) {
       entitlement[member] = (entitlement[member] || 0) + share;
-      if (!(member in received)) received[member] = received[member] || 0;
+      if (!(member in received)) received[member] = 0;
+      if (!(member in directReceived)) directReceived[member] = 0;
+      if (!(member in saleHeld)) saleHeld[member] = 0;
     });
-    const holder = getEntryRecipient(entry) || entry.sale?.sellerName || members[0] || '';
-    if (holder) received[holder] = (received[holder] || 0) + calc.netAmount;
+
+    const recipient = getEntryRecipient(entry);
+    const holder = recipient || entry.sale?.sellerName || members[0] || '';
+    if (holder) {
+      received[holder] = (received[holder] || 0) + calc.netAmount;
+      if (recipient) directReceived[holder] = (directReceived[holder] || 0) + calc.netAmount;
+      else saleHeld[holder] = (saleHeld[holder] || 0) + calc.netAmount;
+    }
   });
+
   const members = Array.from(new Set(Object.keys(entitlement).concat(Object.keys(received))));
   const balances = {};
   members.forEach(function (member) {
     balances[member] = roundFloat((received[member] || 0) - (entitlement[member] || 0), 6);
   });
-  const payers = members.filter(function (m) { return balances[m] > 0.0000001; }).map(function (m) { return { name: m, amount: balances[m] }; });
-  const receivers = members.filter(function (m) { return balances[m] < -0.0000001; }).map(function (m) { return { name: m, amount: -balances[m] }; });
+
+  const payers = members.filter(function (m) { return balances[m] > 0.0000001; }).map(function (m) {
+    return { name: m, amount: balances[m] };
+  });
+  const receivers = members.filter(function (m) { return balances[m] < -0.0000001; }).map(function (m) {
+    return { name: m, amount: -balances[m] };
+  });
+
   const transfers = [];
-  let i = 0, j = 0;
+  let i = 0;
+  let j = 0;
   while (i < payers.length && j < receivers.length) {
     const amount = Math.min(payers[i].amount, receivers[j].amount);
-    if (amount > 0.0000001) transfers.push({ from: payers[i].name, to: receivers[j].name, amount: roundFloat(amount, 6) });
+    if (amount > 0.0000001) {
+      transfers.push({ from: payers[i].name, to: receivers[j].name, amount: roundFloat(amount, 6) });
+    }
     payers[i].amount -= amount;
     receivers[j].amount -= amount;
     if (payers[i].amount <= 0.0000001) i += 1;
     if (receivers[j].amount <= 0.0000001) j += 1;
   }
-  return { totalValue: roundFloat(totalValue, 6), members: members, entitlement: entitlement, received: received, balances: balances, transfers: transfers, cashRate: cashRate };
+
+  const uniqueRates = Array.from(new Set(rates.map(function (rate) { return numberOrZero(rate); }).filter(Boolean)));
+  const cashRate = uniqueRates.length === 1 ? uniqueRates[0] : 0;
+
+  return {
+    totalValue: roundFloat(totalValue, 6),
+    members: members,
+    entitlement: entitlement,
+    received: received,
+    directReceived: directReceived,
+    saleHeld: saleHeld,
+    balances: balances,
+    transfers: transfers,
+    cashRate: cashRate,
+    mixedCashRates: uniqueRates.length > 1,
+    cashRates: uniqueRates,
+  };
 }
 
 function pendingGroupCard(group) {
@@ -1752,10 +1843,14 @@ function pendingGroupCard(group) {
   const itemRows = group.entries.map(function (entry) {
     const calc = calculateEntry(entry);
     const recipient = getEntryRecipient(entry);
+    const receiptLine = recipient
+      ? '<span class="recipient-chip">🎁 ' + escapeHtml(recipient) + ' 직접 수령</span>'
+      : '<span class="sale-chip">💰 판매 정산</span>';
     return '<div class="group-item">' +
       '<label class="group-item-check"><input type="checkbox" data-action="select-entry" data-id="' + escapeHtml(entry.id) + '"' + (selectedEntryIds.has(entry.id) ? ' checked' : '') + ' /></label>' +
       '<div class="group-item-main"><b>' + escapeHtml(entry.boss) + ' · ' + escapeHtml(entry.item) + '</b>' +
-      '<span>' + escapeHtml(getEntryCategory(entry)) + ' · ' + formatAmount(calc.netAmount) + (recipient ? ' · ' + escapeHtml(recipient) + ' 수령' : ' · 판매 정산') + '</span></div>' +
+      '<span>' + escapeHtml(getEntryCategory(entry)) + ' · ' + formatAmount(calc.netAmount) + '</span>' +
+      '<div class="receipt-indicator">' + receiptLine + '</div></div>' +
       '<button class="ghost small" data-action="edit-entry" data-id="' + escapeHtml(entry.id) + '">수정</button>' +
       '</div>';
   }).join('');
@@ -1775,19 +1870,31 @@ function completedGroupCard(group) {
   const itemRows = group.entries.map(function (entry) {
     const calc = calculateEntry(entry);
     const recipient = getEntryRecipient(entry);
+    const receiptLine = recipient
+      ? '<span class="recipient-chip">🎁 ' + escapeHtml(recipient) + ' 직접 수령</span>'
+      : '<span class="sale-chip">💰 판매 정산</span>';
     return '<div class="group-item completed done-selectable">' +
       '<label class="group-item-check"><input type="checkbox" data-action="select-done-entry" data-id="' + escapeHtml(entry.id) + '"' + (selectedDoneEntryIds.has(entry.id) ? ' checked' : '') + ' /></label>' +
       '<div class="group-item-main"><b>' + escapeHtml(entry.boss) + ' · ' + escapeHtml(entry.item) + '</b>' +
-      '<span>' + escapeHtml(getEntryCategory(entry)) + ' · ' + formatAmount(calc.netAmount) + (recipient ? ' · ' + escapeHtml(recipient) + ' 수령' : ' · 판매') + '</span></div>' +
+      '<span>' + escapeHtml(getEntryCategory(entry)) + ' · ' + formatAmount(calc.netAmount) + '</span>' +
+      '<div class="receipt-indicator">' + receiptLine + '</div></div>' +
       '<button class="secondary small" data-action="edit-entry" data-id="' + escapeHtml(entry.id) + '">수정</button>' +
       '</div>';
   }).join('');
+
   const transferRows = settlement.transfers.length
     ? settlement.transfers.map(function (transfer) {
-        const cash = settlement.cashRate > 0 ? ' / ' + formatWon(transfer.amount * settlement.cashRate) : '';
+        const cash = (!settlement.mixedCashRates && settlement.cashRate > 0)
+          ? ' / ' + formatWon(transfer.amount * settlement.cashRate)
+          : '';
         return '<div class="transfer-row"><b>' + escapeHtml(transfer.from) + ' → ' + escapeHtml(transfer.to) + '</b><span>' + formatAmount(transfer.amount) + cash + '</span></div>';
       }).join('')
     : '<div class="transfer-row"><b>추가 송금 없음</b><span>상계 완료</span></div>';
+
+  const recipientSummary = group.entries.filter(function (entry) { return Boolean(getEntryRecipient(entry)); }).map(function (entry) {
+    return '<div class="recipient-summary-row"><span>🎁 ' + escapeHtml(getEntryRecipient(entry)) + ' 직접 수령</span><b>' + escapeHtml(entry.item) + ' · ' + formatAmount(calculateEntry(entry).netAmount) + '</b></div>';
+  }).join('');
+
   return '<section class="group-card done-group">' +
     '<div class="group-card-head">' +
       '<label class="group-select"><input type="checkbox" data-action="select-done-group" data-group-id="' + escapeHtml(group.id) + '"' + (allSelected ? ' checked' : '') + ' /><span>' + escapeHtml(getGroupLabel(group)) + '</span></label>' +
@@ -1796,6 +1903,7 @@ function completedGroupCard(group) {
     '<div class="item-sub">완료 그룹 · ' + group.entries.length + '건 · 수정/재그룹 가능</div>' +
     '<div class="group-total">그룹 총 가치 <b>' + formatAmount(settlement.totalValue) + '</b></div>' +
     '<div class="group-items">' + itemRows + '</div>' +
+    (recipientSummary ? '<div class="recipient-summary-box"><h3>직접 수령 반영</h3>' + recipientSummary + '</div>' : '') +
     '<div class="settlement-box"><h3>최종 정산</h3>' + transferRows + '</div>' +
     '<div class="item-actions"><button class="secondary" data-action="copy-group-share" data-group-id="' + escapeHtml(group.id) + '">그룹 공유문 복사</button></div>' +
     '</section>';
