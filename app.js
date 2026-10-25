@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.4.2';
+const APP_VERSION = '5.4.3';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 const MAPLE_ITEM_DB = Array.isArray(window.MAPLE_ITEM_DB) ? window.MAPLE_ITEM_DB : [];
 const MAPLE_ITEM_CATEGORIES = ['자동', '광휘의 보스 장신구', '칠흑의 보스 장신구', '여명의 보스 장신구', '보스 장신구', '에테르넬 장비', '아케인셰이드 장비', '앱솔랩스 장비', '루타비스 장비', '연마석', '익셉셔널 해머', '기타'];
@@ -489,7 +489,7 @@ function renderDone() {
     ${lastBatchShareText ? `
       <section class="card share-result">
         <div class="section-title" style="margin-top:0">
-          <h2>방금 만든 통합 공유문</h2>
+          <h2>최근 공유문</h2>
           <button class="primary small" data-action="copy-batch-share">복사</button>
         </div>
         <div class="copy-box share-preview">${escapeHtml(lastBatchShareText)}</div>
@@ -1187,8 +1187,11 @@ function handleBulkEntrySubmit(event) {
     }
     Object.assign(existing, payload);
     if (!wasDone && payload.status !== 'done') selectedEntryIds.add(payload.id);
-    if (wasDone) selectedDoneEntryIds.add(payload.id);
-    showToast(wasDone ? '완료 정산을 수정하고 그룹 금액을 다시 계산했습니다.' : '정산을 수정했습니다.');
+    if (wasDone) {
+      selectedDoneEntryIds.add(payload.id);
+      refreshLatestShareForGroup(getEntryGroupId(payload));
+    }
+    showToast(wasDone ? '완료 정산을 수정하고 최근 공유문까지 갱신했습니다.' : '정산을 수정했습니다.');
   } else {
     const payloads = rows.map(function (row) { return buildBulkEntryPayload(row, null, now, '', groupId); });
     state.entries.unshift.apply(state.entries, payloads);
@@ -1468,20 +1471,17 @@ function buildBatchShareText(entries) {
   return groups.map(function (group) {
     const settlement = calculateGroupSettlement(group.entries);
     const dates = Array.from(new Set(group.entries.map(function (entry) { return formatDate(entry.date); })));
-    const members = settlement.members;
     const recipients = group.entries.filter(function (entry) { return Boolean(getEntryRecipient(entry)); });
     const sameRate = !settlement.mixedCashRates && settlement.cashRate > 0;
-
     const lines = [
       '정산 날짜: ' + dates.join(', '),
-      '정산 인원: ' + members.length + '인',
+      '정산 인원: ' + settlement.members.length + '인',
       '',
     ];
 
     group.entries.forEach(function (entry) {
       const calc = calculateEntry(entry);
       const recipient = getEntryRecipient(entry);
-
       if (recipient) {
         lines.push('🎁 [직접 수령] ' + entry.boss + ' · ' + entry.item);
         lines.push(recipient + ' 수령 · 아이템 가치 ' + formatAmount(calc.netAmount) + ' · 경매장 수수료 미적용');
@@ -1494,49 +1494,65 @@ function buildBatchShareText(entries) {
     });
 
     lines.push('총 정산 가치: ' + formatAmount(settlement.totalValue));
+    lines.push('· 판매 정산 합계: ' + formatAmount(settlement.soldTotal));
+    if (settlement.directTotal > 0) lines.push('· 직접 수령 합계: ' + formatAmount(settlement.directTotal));
     if (sameRate) {
       lines.push('현금 환산 기준: 억당 ' + formatWon(settlement.cashRate) + ' · 총 ' + formatWon(settlement.totalValue * settlement.cashRate));
     } else if (settlement.mixedCashRates) {
       lines.push('현금 환산: 완료 시세가 서로 달라 메소 기준으로 계산');
     }
-    lines.push('');
 
+    lines.push('');
     lines.push('정산 계산 근거');
-    members.forEach(function (member) {
-      const share = numberOrZero(settlement.entitlement[member]);
-      const sale = numberOrZero(settlement.saleHeld[member]);
+    settlement.members.forEach(function (member) {
+      const totalShare = numberOrZero(settlement.entitlement[member]);
+      const soldShare = numberOrZero(settlement.soldEntitlement[member]);
+      const directShare = numberOrZero(settlement.directEntitlement[member]);
       const direct = numberOrZero(settlement.directReceived[member]);
+      const directDiff = numberOrZero(settlement.directDifference[member]);
+      const sale = numberOrZero(settlement.saleHeld[member]);
       const held = numberOrZero(settlement.received[member]);
       const balance = numberOrZero(settlement.balances[member]);
 
-      lines.push('- ' + member + ': 받을 지분 ' + formatAmount(share));
+      lines.push('- ' + member);
+      lines.push('  · 판매분 받을 몫 ' + formatAmount(soldShare));
+      if (settlement.directTotal > 0) {
+        lines.push('  · 직접수령템 본인 지분 ' + formatAmount(directShare));
+        lines.push('  · 실제 직접 수령 ' + formatAmount(direct));
+        if (directDiff > 0.0000001) {
+          lines.push('  · 직접 수령 초과분 ' + formatAmount(directDiff) + ' → 현금 받을 몫에서 차감');
+        } else if (directDiff < -0.0000001) {
+          lines.push('  · 직접 수령 미수령분 ' + formatAmount(Math.abs(directDiff)) + ' → 현금으로 더 받아야 함');
+        }
+      }
       if (sale > 0) lines.push('  · 판매대금 보유 ' + formatAmount(sale));
-      if (direct > 0) lines.push('  · 직접 수령 아이템 ' + formatAmount(direct));
-      if (held <= 0) lines.push('  · 이미 받은 가치 0억');
 
-      if (balance > 0.0000001) {
-        lines.push('  → 보유 ' + formatAmount(held) + ' - 지분 ' + formatAmount(share) + ' = ' + formatAmount(balance) + ' 전달해야 함');
+      if (sale <= 0 && directDiff > 0.0000001 && balance < -0.0000001) {
+        lines.push('  → 판매분 몫 ' + formatAmount(soldShare) + ' - 직접 수령 초과분 ' + formatAmount(directDiff) + ' = ' + formatAmount(Math.abs(balance)) + ' 받아야 함');
+      } else if (sale <= 0 && directDiff < -0.0000001 && balance < -0.0000001) {
+        lines.push('  → 판매분 몫 ' + formatAmount(soldShare) + ' + 직접 미수령분 ' + formatAmount(Math.abs(directDiff)) + ' = ' + formatAmount(Math.abs(balance)) + ' 받아야 함');
+      } else if (balance > 0.0000001) {
+        lines.push('  → 현재 보유 ' + formatAmount(held) + ' - 전체 지분 ' + formatAmount(totalShare) + ' = ' + formatAmount(balance) + ' 전달해야 함');
       } else if (balance < -0.0000001) {
-        lines.push('  → 지분 ' + formatAmount(share) + ' - 보유 ' + formatAmount(held) + ' = ' + formatAmount(Math.abs(balance)) + ' 받아야 함');
+        lines.push('  → 전체 지분 ' + formatAmount(totalShare) + ' - 현재 보유 ' + formatAmount(held) + ' = ' + formatAmount(Math.abs(balance)) + ' 받아야 함');
       } else {
-        lines.push('  → 보유 가치와 지분이 같아 추가 정산 없음');
+        lines.push('  → 추가 정산 없음');
       }
     });
 
-    lines.push('');
     if (recipients.length) {
+      lines.push('');
       lines.push('직접 수령 반영');
       recipients.forEach(function (entry) {
         const calc = calculateEntry(entry);
         const recipient = getEntryRecipient(entry);
-        lines.push('- ' + recipient + ': ' + entry.item + ' ' + formatAmount(calc.netAmount) + ' 이미 수령');
+        const memberShare = entry.members.length ? calc.netAmount / entry.members.length : 0;
+        lines.push('- ' + recipient + ': ' + entry.item + ' ' + formatAmount(calc.netAmount) + ' 직접 수령');
+        lines.push('  · 본인 지분 ' + formatAmount(memberShare) + ' / 초과 수령 ' + formatAmount(calc.netAmount - memberShare));
       });
-      lines.push('');
-    } else {
-      lines.push('직접 수령 반영: 없음');
-      lines.push('');
     }
 
+    lines.push('');
     lines.push('최종 정산');
     if (settlement.transfers.length) {
       settlement.transfers.forEach(function (transfer) {
@@ -1546,7 +1562,8 @@ function buildBatchShareText(entries) {
     } else {
       lines.push('추가 송금 없음');
     }
-
+    lines.push('');
+    lines.push('※ 화면 표시는 소수 2자리지만 최종 정산은 반올림 전 원값으로 계산');
     return lines.join('\n').replace(/\n{3,}/g, '\n\n');
   }).join('\n\n────────\n\n');
 }
@@ -1763,27 +1780,37 @@ function getExpandedSelectedPendingEntries(selected) {
 
 function calculateGroupSettlement(entries) {
   const entitlement = {};
+  const soldEntitlement = {};
+  const directEntitlement = {};
   const received = {};
   const directReceived = {};
   const saleHeld = {};
   let totalValue = 0;
+  let soldTotal = 0;
+  let directTotal = 0;
   const rates = [];
 
   (entries || []).forEach(function (entry) {
     const calc = calculateEntry(entry);
+    const recipient = getEntryRecipient(entry);
     totalValue += calc.netAmount;
+    if (recipient) directTotal += calc.netAmount;
+    else soldTotal += calc.netAmount;
     if (calc.cashRatePerBillion > 0) rates.push(calc.cashRatePerBillion);
 
     const members = entry.members || [];
     const share = members.length ? calc.netAmount / members.length : 0;
     members.forEach(function (member) {
       entitlement[member] = (entitlement[member] || 0) + share;
+      if (recipient) directEntitlement[member] = (directEntitlement[member] || 0) + share;
+      else soldEntitlement[member] = (soldEntitlement[member] || 0) + share;
       if (!(member in received)) received[member] = 0;
       if (!(member in directReceived)) directReceived[member] = 0;
       if (!(member in saleHeld)) saleHeld[member] = 0;
+      if (!(member in soldEntitlement)) soldEntitlement[member] = soldEntitlement[member] || 0;
+      if (!(member in directEntitlement)) directEntitlement[member] = directEntitlement[member] || 0;
     });
 
-    const recipient = getEntryRecipient(entry);
     const holder = recipient || entry.sale?.sellerName || members[0] || '';
     if (holder) {
       received[holder] = (received[holder] || 0) + calc.netAmount;
@@ -1794,8 +1821,10 @@ function calculateGroupSettlement(entries) {
 
   const members = Array.from(new Set(Object.keys(entitlement).concat(Object.keys(received))));
   const balances = {};
+  const directDifference = {};
   members.forEach(function (member) {
     balances[member] = roundFloat((received[member] || 0) - (entitlement[member] || 0), 6);
+    directDifference[member] = roundFloat((directReceived[member] || 0) - (directEntitlement[member] || 0), 6);
   });
 
   const payers = members.filter(function (m) { return balances[m] > 0.0000001; }).map(function (m) {
@@ -1810,9 +1839,7 @@ function calculateGroupSettlement(entries) {
   let j = 0;
   while (i < payers.length && j < receivers.length) {
     const amount = Math.min(payers[i].amount, receivers[j].amount);
-    if (amount > 0.0000001) {
-      transfers.push({ from: payers[i].name, to: receivers[j].name, amount: roundFloat(amount, 6) });
-    }
+    if (amount > 0.0000001) transfers.push({ from: payers[i].name, to: receivers[j].name, amount: roundFloat(amount, 6) });
     payers[i].amount -= amount;
     receivers[j].amount -= amount;
     if (payers[i].amount <= 0.0000001) i += 1;
@@ -1820,18 +1847,21 @@ function calculateGroupSettlement(entries) {
   }
 
   const uniqueRates = Array.from(new Set(rates.map(function (rate) { return numberOrZero(rate); }).filter(Boolean)));
-  const cashRate = uniqueRates.length === 1 ? uniqueRates[0] : 0;
-
   return {
     totalValue: roundFloat(totalValue, 6),
+    soldTotal: roundFloat(soldTotal, 6),
+    directTotal: roundFloat(directTotal, 6),
     members: members,
     entitlement: entitlement,
+    soldEntitlement: soldEntitlement,
+    directEntitlement: directEntitlement,
     received: received,
     directReceived: directReceived,
+    directDifference: directDifference,
     saleHeld: saleHeld,
     balances: balances,
     transfers: transfers,
-    cashRate: cashRate,
+    cashRate: uniqueRates.length === 1 ? uniqueRates[0] : 0,
     mixedCashRates: uniqueRates.length > 1,
     cashRates: uniqueRates,
   };
@@ -1976,20 +2006,30 @@ function moveSelectedDoneToGroup() {
     return entry.status === 'done' && getEntryGroupId(entry) === target;
   }).forEach(function (entry) { selectedDoneEntryIds.add(entry.id); });
 
-  lastBatchShareText = buildBatchShareText(
-    state.entries.filter(function (entry) {
-      return entry.status === 'done' && getEntryGroupId(entry) === target;
-    })
-  );
-  sessionStorage.setItem('bossSplit.lastBatchShare.v5', lastBatchShareText);
+  refreshLatestShareForGroup(target);
   saveState();
   showToast(movedCount + '건을 완료 그룹에 편입하고 정산을 다시 계산했습니다.');
   renderDone();
 }
 
+function refreshLatestShareForGroup(groupId) {
+  const entries = state.entries.filter(function (entry) {
+    return entry.status === 'done' && getEntryGroupId(entry) === groupId;
+  });
+  if (!entries.length) {
+    lastBatchShareText = '';
+    sessionStorage.removeItem('bossSplit.lastBatchShare.v5');
+    return;
+  }
+  lastBatchShareText = buildBatchShareText(entries);
+  sessionStorage.setItem('bossSplit.lastBatchShare.v5', lastBatchShareText);
+}
+
 async function copyGroupShare(groupId) {
   const entries = state.entries.filter(function (entry) { return getEntryGroupId(entry) === groupId; });
   const text = buildBatchShareText(entries);
+  lastBatchShareText = text;
+  sessionStorage.setItem('bossSplit.lastBatchShare.v5', lastBatchShareText);
   try {
     await navigator.clipboard.writeText(text);
     showToast('그룹 공유문을 복사했습니다.');
