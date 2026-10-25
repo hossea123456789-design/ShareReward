@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.4.0';
+const APP_VERSION = '5.4.1';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 const MAPLE_ITEM_DB = Array.isArray(window.MAPLE_ITEM_DB) ? window.MAPLE_ITEM_DB : [];
 const MAPLE_ITEM_CATEGORIES = ['자동', '광휘의 보스 장신구', '칠흑의 보스 장신구', '여명의 보스 장신구', '보스 장신구', '에테르넬 장비', '아케인셰이드 장비', '앱솔랩스 장비', '루타비스 장비', '연마석', '익셉셔널 해머', '기타'];
@@ -36,6 +36,7 @@ let remoteStatus = 'local';
 let remoteUpdatedAt = localStorage.getItem('bossSplitLedger.remoteUpdatedAt.v1') || '';
 let suppressRemoteSave = false;
 let selectedEntryIds = new Set();
+let selectedDoneEntryIds = new Set();
 let lastBatchShareText = sessionStorage.getItem('bossSplit.lastBatchShare.v5') || '';
 const clientId = getOrCreateClientId();
 
@@ -471,10 +472,18 @@ function renderList() {
 function renderDone() {
   const keyword = sessionStorage.getItem('bossSplit.search') || '';
   const done = state.entries.filter(function (e) { return e.status === 'done'; });
+  const validIds = new Set(done.map(function (entry) { return entry.id; }));
+  selectedDoneEntryIds = new Set(Array.from(selectedDoneEntryIds).filter(function (id) { return validIds.has(id); }));
+
   const filtered = filterEntries(done, keyword);
   const matchedGroupIds = new Set(filtered.map(getEntryGroupId));
   const visible = keyword ? done.filter(function (entry) { return matchedGroupIds.has(getEntryGroupId(entry)); }) : done;
   const groups = getStoredGroups(visible);
+  const selectedDone = done.filter(function (entry) { return selectedDoneEntryIds.has(entry.id); });
+  const allDoneGroups = getStoredGroups(done);
+  const targetOptions = allDoneGroups.map(function (group) {
+    return '<option value="' + escapeHtml(group.id) + '">' + escapeHtml(getGroupLabel(group)) + '</option>';
+  }).join('');
 
   app.innerHTML = `
     ${lastBatchShareText ? `
@@ -489,8 +498,27 @@ function renderDone() {
 
     <section class="card">
       <h2>정산완료</h2>
-      <p class="item-sub">완료 기록도 등록 당시 그룹을 그대로 유지합니다. 아이템 수령분까지 상계한 최종 송금 방향을 함께 표시합니다.</p>
+      <p class="item-sub">완료 후에도 금액·아이템·수령자 수정이 가능하고, 완료된 항목/그룹끼리 다시 하나의 그룹으로 합칠 수 있습니다.</p>
     </section>
+
+    <section class="batch-toolbar done-batch-toolbar">
+      <div class="batch-summary">
+        <b>완료 선택 ${selectedDone.length}건</b>
+        <span>${selectedDone.length ? getStoredGroups(selectedDone).length + '개 그룹의 항목이 선택됨' : '합칠 완료 항목이나 그룹을 선택하세요.'}</span>
+      </div>
+      <div class="batch-actions">
+        <button class="ghost small" data-action="select-all-done" ${done.length ? '' : 'disabled'}>전체 선택</button>
+        <button class="ghost small" data-action="clear-done-selection" ${selectedDone.length ? '' : 'disabled'}>선택 해제</button>
+      </div>
+      <div class="group-merge-row">
+        <select id="doneMergeTargetGroup" ${allDoneGroups.length ? '' : 'disabled'}>
+          <option value="">편입할 완료 그룹 선택</option>
+          ${targetOptions}
+        </select>
+        <button class="secondary" data-action="merge-selected-done-group" ${selectedDone.length && allDoneGroups.length ? '' : 'disabled'}>선택 완료 항목 편입</button>
+      </div>
+    </section>
+
     <div class="section-title"><h2>완료 그룹</h2><span class="sub">${groups.length}그룹 · ${visible.length}건</span></div>
     <div class="search-row">
       <input id="doneSearch" type="search" value="${escapeHtml(keyword)}" placeholder="보스, 아이템, 참여자, 수령자 검색" />
@@ -539,9 +567,10 @@ function renderDetail(id) {
         <h3>참여자</h3>
         <p class="item-sub">${entry.members.map(escapeHtml).join(', ') || '-'}</p>
       </div>
+      ${entry.status === 'done' ? '<p class="item-sub done-edit-note">완료 기록을 수정해도 완료 상태와 당시 억당 시세는 유지되며, 그룹 총액과 최종 상계 금액은 새 값으로 다시 계산됩니다.</p>' : ''}
       <div class="item-actions">
         <button class="ghost" data-action="back-list">목록으로</button>
-        ${pending ? `<button class="secondary" data-action="edit-entry" data-id="${entry.id}">수정</button>` : ''}
+        <button class="secondary" data-action="edit-entry" data-id="${entry.id}">수정</button>
         <button class="secondary" data-action="copy-share" data-id="${entry.id}">공유문구 복사</button>
         <button class="danger" data-action="delete-entry" data-id="${entry.id}">삭제</button>
       </div>
@@ -728,6 +757,9 @@ function handleAppClick(event) {
     'complete-group': function () { completeGroup(groupId); },
     'add-to-group': function () { openBulkEntryDialog(null, groupId); },
     'merge-selected-group': moveSelectedToGroup,
+    'select-all-done': selectAllDone,
+    'clear-done-selection': clearDoneSelection,
+    'merge-selected-done-group': moveSelectedDoneToGroup,
     'copy-group-share': function () { copyGroupShare(groupId); },
     'copy-batch-share': copyBatchShare,
     'clear-search': function () { sessionStorage.removeItem('bossSplit.search'); renderDone(); },
@@ -765,6 +797,24 @@ function handleAppChange(event) {
       });
     }
     renderList();
+    return;
+  }
+  if (target.matches('[data-action="select-done-entry"]')) {
+    if (target.checked) selectedDoneEntryIds.add(target.dataset.id);
+    else selectedDoneEntryIds.delete(target.dataset.id);
+    renderDone();
+    return;
+  }
+  if (target.matches('[data-action="select-done-group"]')) {
+    const group = getStoredGroups(state.entries.filter(function (entry) { return entry.status === 'done'; }))
+      .find(function (g) { return g.id === target.dataset.groupId; });
+    if (group) {
+      group.entries.forEach(function (entry) {
+        if (target.checked) selectedDoneEntryIds.add(entry.id);
+        else selectedDoneEntryIds.delete(entry.id);
+      });
+    }
+    renderDone();
     return;
   }
   if (target.matches('[data-action="toggle-payment"]')) {
@@ -1101,6 +1151,7 @@ function handleBulkEntrySubmit(event) {
   event.preventDefault();
   const editingId = $('#entryId').value;
   const existing = editingId ? findEntry(editingId) : null;
+  const wasDone = existing && existing.status === 'done';
   const rows = getActiveBulkEntryRows();
   if (!rows.length) { showToast('정산 항목과 금액을 1건 이상 입력하세요.'); return; }
   if (existing && rows.length !== 1) { showToast('기존 정산 수정은 1건만 가능합니다.'); return; }
@@ -1121,17 +1172,31 @@ function handleBulkEntrySubmit(event) {
     : (existing ? getEntryGroupId(existing) : makeGroupId());
 
   if (existing) {
+    const previousCompletedRate = existing.sale?.completedCashRate;
+    const previousCompletedAt = existing.sale?.completedAt;
     const payload = buildBulkEntryPayload(rows[0], existing, now, existing.id, groupId);
+    if (wasDone) {
+      payload.status = 'done';
+      payload.sale = Object.assign({}, payload.sale || {}, {
+        completedCashRate: previousCompletedRate ?? existing.sale?.cashRatePerBillion ?? state.settings.cashRatePerBillion,
+        cashRatePerBillion: previousCompletedRate ?? existing.sale?.cashRatePerBillion ?? state.settings.cashRatePerBillion,
+        completedAt: previousCompletedAt || now,
+        adjustedAt: now,
+      });
+      payload.payments = Object.fromEntries((payload.members || []).map(function (member) { return [member, true]; }));
+    }
     Object.assign(existing, payload);
-    if (payload.status !== 'done') selectedEntryIds.add(payload.id);
-    showToast('정산을 수정했습니다.');
+    if (!wasDone && payload.status !== 'done') selectedEntryIds.add(payload.id);
+    if (wasDone) selectedDoneEntryIds.add(payload.id);
+    showToast(wasDone ? '완료 정산을 수정하고 그룹 금액을 다시 계산했습니다.' : '정산을 수정했습니다.');
   } else {
     const payloads = rows.map(function (row) { return buildBulkEntryPayload(row, null, now, '', groupId); });
     state.entries.unshift.apply(state.entries, payloads);
     payloads.forEach(function (payload) { selectedEntryIds.add(payload.id); });
     showToast(payloads.length + '건을 같은 그룹으로 등록하고 자동 선택했습니다.');
   }
-  state.activeTab = 'waiting';
+
+  state.activeTab = wasDone ? 'done' : 'waiting';
   state.detailId = null;
   saveState();
   $('#entryDialog').close();
@@ -1583,6 +1648,16 @@ function makeGroupId() {
 function populateEntryGroupOptions(targetGroupId, entry) {
   const select = $('#entryTargetGroup');
   if (!select) return;
+
+  if (entry && entry.status === 'done') {
+    const currentId = getEntryGroupId(entry);
+    select.innerHTML = '<option value="' + escapeHtml(currentId) + '">현재 완료 그룹 유지</option>';
+    select.value = currentId;
+    select.disabled = true;
+    return;
+  }
+
+  select.disabled = false;
   const groups = getStoredGroups(state.entries.filter(isPendingEntry));
   const currentId = targetGroupId || (entry ? getEntryGroupId(entry) : '');
   const options = ['<option value="__new__">새 그룹으로 등록</option>'].concat(groups.map(function (group) {
@@ -1696,11 +1771,16 @@ function pendingGroupCard(group) {
 
 function completedGroupCard(group) {
   const settlement = calculateGroupSettlement(group.entries);
+  const allSelected = group.entries.every(function (entry) { return selectedDoneEntryIds.has(entry.id); });
   const itemRows = group.entries.map(function (entry) {
     const calc = calculateEntry(entry);
     const recipient = getEntryRecipient(entry);
-    return '<div class="group-item completed"><div class="group-item-main"><b>' + escapeHtml(entry.boss) + ' · ' + escapeHtml(entry.item) + '</b>' +
-      '<span>' + escapeHtml(getEntryCategory(entry)) + ' · ' + formatAmount(calc.netAmount) + (recipient ? ' · ' + escapeHtml(recipient) + ' 수령' : ' · 판매') + '</span></div></div>';
+    return '<div class="group-item completed done-selectable">' +
+      '<label class="group-item-check"><input type="checkbox" data-action="select-done-entry" data-id="' + escapeHtml(entry.id) + '"' + (selectedDoneEntryIds.has(entry.id) ? ' checked' : '') + ' /></label>' +
+      '<div class="group-item-main"><b>' + escapeHtml(entry.boss) + ' · ' + escapeHtml(entry.item) + '</b>' +
+      '<span>' + escapeHtml(getEntryCategory(entry)) + ' · ' + formatAmount(calc.netAmount) + (recipient ? ' · ' + escapeHtml(recipient) + ' 수령' : ' · 판매') + '</span></div>' +
+      '<button class="secondary small" data-action="edit-entry" data-id="' + escapeHtml(entry.id) + '">수정</button>' +
+      '</div>';
   }).join('');
   const transferRows = settlement.transfers.length
     ? settlement.transfers.map(function (transfer) {
@@ -1709,7 +1789,11 @@ function completedGroupCard(group) {
       }).join('')
     : '<div class="transfer-row"><b>추가 송금 없음</b><span>상계 완료</span></div>';
   return '<section class="group-card done-group">' +
-    '<div class="group-card-head"><div><b>' + escapeHtml(getGroupLabel(group)) + '</b><div class="item-sub">완료 그룹 · ' + group.entries.length + '건</div></div><span class="badge done">완료</span></div>' +
+    '<div class="group-card-head">' +
+      '<label class="group-select"><input type="checkbox" data-action="select-done-group" data-group-id="' + escapeHtml(group.id) + '"' + (allSelected ? ' checked' : '') + ' /><span>' + escapeHtml(getGroupLabel(group)) + '</span></label>' +
+      '<span class="badge done">완료</span>' +
+    '</div>' +
+    '<div class="item-sub">완료 그룹 · ' + group.entries.length + '건 · 수정/재그룹 가능</div>' +
     '<div class="group-total">그룹 총 가치 <b>' + formatAmount(settlement.totalValue) + '</b></div>' +
     '<div class="group-items">' + itemRows + '</div>' +
     '<div class="settlement-box"><h3>최종 정산</h3>' + transferRows + '</div>' +
@@ -1738,6 +1822,61 @@ function moveSelectedToGroup() {
   saveState();
   showToast(selected.length + '건을 선택한 그룹에 편입했습니다.');
   renderList();
+}
+
+function selectAllDone() {
+  state.entries.filter(function (entry) { return entry.status === 'done'; })
+    .forEach(function (entry) { selectedDoneEntryIds.add(entry.id); });
+  renderDone();
+}
+
+function clearDoneSelection() {
+  selectedDoneEntryIds.clear();
+  renderDone();
+}
+
+function moveSelectedDoneToGroup() {
+  const target = $('#doneMergeTargetGroup')?.value || '';
+  const selected = state.entries.filter(function (entry) {
+    return entry.status === 'done' && selectedDoneEntryIds.has(entry.id);
+  });
+
+  if (!target) { showToast('편입할 완료 그룹을 선택하세요.'); return; }
+  if (!selected.length) { showToast('편입할 완료 항목을 선택하세요.'); return; }
+
+  const targetEntries = state.entries.filter(function (entry) {
+    return entry.status === 'done' && getEntryGroupId(entry) === target;
+  });
+  if (!targetEntries.length) { showToast('대상 완료 그룹을 찾을 수 없습니다.'); return; }
+
+  let movedCount = 0;
+  selected.forEach(function (entry) {
+    if (getEntryGroupId(entry) === target) return;
+    entry.sale = entry.sale || {};
+    entry.sale.groupId = target;
+    entry.sale.regroupedAt = new Date().toISOString();
+    movedCount += 1;
+  });
+
+  if (!movedCount) {
+    showToast('선택한 항목이 이미 대상 그룹에 포함되어 있습니다.');
+    return;
+  }
+
+  selectedDoneEntryIds.clear();
+  state.entries.filter(function (entry) {
+    return entry.status === 'done' && getEntryGroupId(entry) === target;
+  }).forEach(function (entry) { selectedDoneEntryIds.add(entry.id); });
+
+  lastBatchShareText = buildBatchShareText(
+    state.entries.filter(function (entry) {
+      return entry.status === 'done' && getEntryGroupId(entry) === target;
+    })
+  );
+  sessionStorage.setItem('bossSplit.lastBatchShare.v5', lastBatchShareText);
+  saveState();
+  showToast(movedCount + '건을 완료 그룹에 편입하고 정산을 다시 계산했습니다.');
+  renderDone();
 }
 
 async function copyGroupShare(groupId) {
