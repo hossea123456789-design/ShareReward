@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.6.1';
+const APP_VERSION = '5.6.2';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 const MAPLE_ITEM_DB = Array.isArray(window.MAPLE_ITEM_DB) ? window.MAPLE_ITEM_DB : [];
 const MAPLE_ITEM_CATEGORIES = ['자동', '광휘의 보스 장신구', '칠흑의 보스 장신구', '여명의 보스 장신구', '보스 장신구', '에테르넬 장비', '아케인셰이드 장비', '앱솔랩스 장비', '루타비스 장비', '연마석', '익셉셔널 해머', '기타'];
@@ -1808,25 +1808,27 @@ function buildBatchShareText(entries) {
       lines.push('');
     });
 
-    const receiver = settlement.members.find(function (member) {
-      return numberOrZero(settlement.saleHeld[member]) <= 0;
+    lines.push('정산 계산');
+    settlement.members.forEach(function (member) {
+      const saleHeld = numberOrZero(settlement.saleHeld[member]);
+      const directHeld = numberOrZero(settlement.directReceived[member]);
+      const entitlement = numberOrZero(settlement.entitlement[member]);
+      const balance = numberOrZero(settlement.balances[member]);
+      const signedBalance = balance > 0.0000001
+        ? '+' + formatAmount(balance)
+        : (balance < -0.0000001 ? '-' + formatAmount(Math.abs(balance)) : formatAmount(0));
+      const resultText = balance > 0.0000001
+        ? '보낼 금액 ' + formatAmount(balance)
+        : (balance < -0.0000001 ? '받을 금액 ' + formatAmount(Math.abs(balance)) : '추가 정산 없음');
+
+      lines.push(
+        '- ' + member + ': 판매대금 보유 ' + formatAmount(saleHeld) +
+        ' + 직접수령 ' + formatAmount(directHeld) +
+        ' - 본인 최종몫 ' + formatAmount(entitlement) +
+        ' = ' + signedBalance + ' → ' + resultText
+      );
     });
-    if (receiver) {
-      const soldShare = numberOrZero(settlement.soldEntitlement[receiver]);
-      const directNet = numberOrZero(settlement.directDifference[receiver]);
-      const balance = numberOrZero(settlement.balances[receiver]);
-      lines.push('판매분 ' + receiver + ' 몫: ' + formatAmount(soldShare));
-      if (directNet > 0.0000001) {
-        lines.push('직접 수령 상계: -' + formatAmount(directNet));
-        lines.push('실제 수령: ' + formatAmount(soldShare) + ' - ' + formatAmount(directNet) + ' = ' + formatAmount(Math.max(0, -balance)));
-      } else if (directNet < -0.0000001) {
-        lines.push('직접 수령 상계: +' + formatAmount(Math.abs(directNet)));
-        lines.push('실제 수령: ' + formatAmount(soldShare) + ' + ' + formatAmount(Math.abs(directNet)) + ' = ' + formatAmount(Math.max(0, -balance)));
-      } else {
-        lines.push('실제 수령: ' + formatAmount(Math.max(0, -balance)));
-      }
-      lines.push('');
-    }
+    lines.push('');
 
     lines.push('최종 정산');
     if (settlement.transfers.length) {
