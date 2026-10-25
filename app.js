@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.4.4';
+const APP_VERSION = '5.4.5';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 const MAPLE_ITEM_DB = Array.isArray(window.MAPLE_ITEM_DB) ? window.MAPLE_ITEM_DB : [];
 const MAPLE_ITEM_CATEGORIES = ['자동', '광휘의 보스 장신구', '칠흑의 보스 장신구', '여명의 보스 장신구', '보스 장신구', '에테르넬 장비', '아케인셰이드 장비', '앱솔랩스 장비', '루타비스 장비', '연마석', '익셉셔널 해머', '기타'];
@@ -38,6 +38,7 @@ let suppressRemoteSave = false;
 let selectedEntryIds = new Set();
 let selectedDoneEntryIds = new Set();
 let lastBatchShareText = sessionStorage.getItem('bossSplit.lastBatchShare.v5') || '';
+let lastBatchShareGroupIds = readRecentShareGroupIds();
 const clientId = getOrCreateClientId();
 
 const $ = (selector) => document.querySelector(selector);
@@ -52,6 +53,7 @@ function init() {
   saveState({ localOnly: true });
   bindGlobalEvents();
   setTodayToEntryDialog();
+  refreshRecentShareFromState();
   render();
   loadRemoteOnStart();
 }
@@ -305,6 +307,7 @@ async function pullRemoteState({ silent = false, initial = false } = {}) {
     saveState({ localOnly: true });
     suppressRemoteSave = false;
     setRemoteStatus('saved', silent ? '' : '공유 데이터를 불러왔습니다.');
+    refreshRecentShareFromState();
     render();
   } catch (error) {
     console.warn(error);
@@ -470,6 +473,7 @@ function renderList() {
 }
 
 function renderDone() {
+  refreshRecentShareFromState();
   const keyword = sessionStorage.getItem('bossSplit.search') || '';
   const done = state.entries.filter(function (e) { return e.status === 'done'; });
   const validIds = new Set(done.map(function (entry) { return entry.id; }));
@@ -1440,8 +1444,8 @@ function completeSelectedBatch() {
     entry.payments = Object.fromEntries((entry.members || []).map(function (member) { return [member, true]; }));
   });
 
-  lastBatchShareText = buildBatchShareText(entries);
-  sessionStorage.setItem('bossSplit.lastBatchShare.v5', lastBatchShareText);
+  setRecentShareGroups(getStoredGroups(entries).map(function (group) { return group.id; }));
+  refreshRecentShareFromState({ fallbackToLatest: false });
   selectedEntryIds.clear();
   state.activeTab = 'done';
   state.detailId = null;
@@ -1451,6 +1455,7 @@ function completeSelectedBatch() {
 }
 
 async function copyBatchShare() {
+  refreshRecentShareFromState();
   if (!lastBatchShareText) {
     showToast('복사할 통합 공유문이 없습니다.');
     return;
@@ -2025,22 +2030,82 @@ function moveSelectedDoneToGroup() {
   renderDone();
 }
 
-function refreshLatestShareForGroup(groupId) {
-  const entries = state.entries.filter(function (entry) {
-    return entry.status === 'done' && getEntryGroupId(entry) === groupId;
+function readRecentShareGroupIds() {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem('bossSplit.lastBatchShareGroups.v1') || '[]');
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function setRecentShareGroups(groupIds) {
+  lastBatchShareGroupIds = Array.from(new Set((groupIds || []).filter(Boolean)));
+  if (lastBatchShareGroupIds.length) {
+    sessionStorage.setItem('bossSplit.lastBatchShareGroups.v1', JSON.stringify(lastBatchShareGroupIds));
+  } else {
+    sessionStorage.removeItem('bossSplit.lastBatchShareGroups.v1');
+  }
+}
+
+function getLatestCompletedGroupId() {
+  const groups = getStoredGroups(state.entries.filter(function (entry) { return entry.status === 'done'; }));
+  if (!groups.length) return '';
+  groups.sort(function (a, b) {
+    function activity(group) {
+      return Math.max.apply(null, group.entries.map(function (entry) {
+        const values = [
+          entry.sale?.adjustedAt,
+          entry.sale?.regroupedAt,
+          entry.sale?.completedAt,
+          entry.createdAt,
+          entry.date ? entry.date + 'T00:00:00' : '',
+        ].filter(Boolean).map(function (value) {
+          const time = new Date(value).getTime();
+          return Number.isFinite(time) ? time : 0;
+        });
+        return values.length ? Math.max.apply(null, values) : 0;
+      }).concat([0]));
+    }
+    return activity(b) - activity(a);
   });
-  if (!entries.length) {
+  return groups[0].id;
+}
+
+function refreshRecentShareFromState(options = {}) {
+  const fallbackToLatest = options.fallbackToLatest !== false;
+  const doneEntries = state.entries.filter(function (entry) { return entry.status === 'done'; });
+  const validGroupIds = new Set(doneEntries.map(getEntryGroupId));
+  let groupIds = (lastBatchShareGroupIds || []).filter(function (id) { return validGroupIds.has(id); });
+
+  if (!groupIds.length && fallbackToLatest) {
+    const latestId = getLatestCompletedGroupId();
+    if (latestId) groupIds = [latestId];
+  }
+
+  if (!groupIds.length) {
+    setRecentShareGroups([]);
     lastBatchShareText = '';
     sessionStorage.removeItem('bossSplit.lastBatchShare.v5');
-    return;
+    return '';
   }
+
+  setRecentShareGroups(groupIds);
+  const entries = doneEntries.filter(function (entry) { return groupIds.includes(getEntryGroupId(entry)); });
   lastBatchShareText = buildBatchShareText(entries);
   sessionStorage.setItem('bossSplit.lastBatchShare.v5', lastBatchShareText);
+  return lastBatchShareText;
+}
+
+function refreshLatestShareForGroup(groupId) {
+  setRecentShareGroups([groupId]);
+  refreshRecentShareFromState({ fallbackToLatest: false });
 }
 
 async function copyGroupShare(groupId) {
   const entries = state.entries.filter(function (entry) { return getEntryGroupId(entry) === groupId; });
   const text = buildBatchShareText(entries);
+  setRecentShareGroups([groupId]);
   lastBatchShareText = text;
   sessionStorage.setItem('bossSplit.lastBatchShare.v5', lastBatchShareText);
   try {
