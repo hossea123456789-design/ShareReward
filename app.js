@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.6.0';
+const APP_VERSION = '5.6.1';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 const MAPLE_ITEM_DB = Array.isArray(window.MAPLE_ITEM_DB) ? window.MAPLE_ITEM_DB : [];
 const MAPLE_ITEM_CATEGORIES = ['자동', '광휘의 보스 장신구', '칠흑의 보스 장신구', '여명의 보스 장신구', '보스 장신구', '에테르넬 장비', '아케인셰이드 장비', '앱솔랩스 장비', '루타비스 장비', '연마석', '익셉셔널 해머', '기타'];
@@ -1078,6 +1078,11 @@ function handleAppClick(event) {
 
 function handleAppChange(event) {
   const target = event.target;
+  if (target.matches('[data-action="set-entry-sale-holder"]')) {
+    setEntrySaleHolder(target.dataset.id, target.value);
+    return;
+  }
+
   if (target.matches('[data-action="set-group-distributor"]')) {
     setGroupDistributor(target.dataset.groupId, target.value);
     return;
@@ -1796,8 +1801,9 @@ function buildBatchShareText(entries) {
         lines.push('🎁 ' + entry.boss + ' · ' + entry.item);
         lines.push(recipient + ' 직접 수령 ' + formatAmount(calc.netAmount) + ' → 상대 몫 ' + formatAmount(owedToOthers) + ' 상계');
       } else {
+        const holder = entry.sale?.sellerName || entry.members?.[0] || '-';
         lines.push('💰 ' + entry.boss + ' · ' + entry.item);
-        lines.push(formatAmount(calc.netAmount) + ' → 1인 ' + formatAmount(calc.rawPerPerson));
+        lines.push(formatAmount(calc.netAmount) + ' → 1인 ' + formatAmount(calc.rawPerPerson) + ' · 보유 ' + holder);
       }
       lines.push('');
     });
@@ -2064,38 +2070,86 @@ function renderGroupDistributorControl(group) {
   const members = settlement.members || [];
   if (!members.length) return '';
   const current = getGroupDistributor(group);
-  const options = ['<option value=""' + (current ? '' : ' selected') + '>항목별 지정</option>'].concat(
+  const options = ['<option value="" selected>일괄 변경 안 함</option>'].concat(
     members.map(function (member) {
-      return '<option value="' + escapeHtml(member) + '"' + (member === current ? ' selected' : '') + '>' + escapeHtml(member) + '</option>';
+      return '<option value="' + escapeHtml(member) + '">' + escapeHtml(member) + '로 일괄 변경</option>';
     })
   ).join('');
-  return '<label class="group-distributor"><span>메소 배분자</span><select data-action="set-group-distributor" data-group-id="' +
-    escapeHtml(group.id) + '">' + options + '</select></label>';
+  const summary = current ? current + ' 단일 보유' : '항목별 보유자 혼합';
+  return '<label class="group-distributor"><span>판매대금 보유자 일괄 변경</span><select data-action="set-group-distributor" data-group-id="' +
+    escapeHtml(group.id) + '">' + options + '</select><small>' + escapeHtml(summary) + '</small></label>';
+}
+
+function renderEntrySaleHolderControl(entry) {
+  if (getEntryRecipient(entry)) return '';
+  const members = entry.members || [];
+  const current = entry.sale?.sellerName || members[0] || '';
+  const options = members.map(function (member) {
+    return '<option value="' + escapeHtml(member) + '"' + (member === current ? ' selected' : '') + '>' + escapeHtml(member) + '</option>';
+  }).join('');
+  return '<label class="entry-sale-holder"><span>판매대금 보유</span><select data-action="set-entry-sale-holder" data-id="' +
+    escapeHtml(entry.id) + '">' + options + '</select></label>';
+}
+
+function setEntrySaleHolder(entryId, holder) {
+  const entry = findEntry(entryId);
+  if (!entry || getEntryRecipient(entry)) return;
+  if (!(entry.members || []).includes(holder)) {
+    showToast('참여자만 판매대금 보유자로 지정할 수 있습니다.');
+    return;
+  }
+
+  entry.sale = entry.sale || {};
+  entry.sale.sellerName = holder;
+  entry.sale.distributorUpdatedAt = new Date().toISOString();
+  entry.payments = prunePayments(entry.payments || {}, entry.members || []);
+  entry.payments[holder] = true;
+
+  const rate = numberOrZero(entry.sale.cashRatePerBillion);
+  if (rate > 0) {
+    const calc = calculateEntry(entry);
+    entry.sale.totalCash = roundWon(calc.netAmount * rate);
+    entry.sale.perPersonCash = roundWon(calc.perPerson * rate);
+    entry.sale.transferCash = roundWon(entry.sale.perPersonCash * Math.max(0, (entry.members || []).length - 1));
+  }
+
+  const groupId = getEntryGroupId(entry);
+  if (entry.status === 'done') refreshLatestShareForGroup(groupId);
+  saveState();
+
+  const groupEntries = state.entries.filter(function (item) { return getEntryGroupId(item) === groupId; });
+  const settlement = calculateGroupSettlement(groupEntries);
+  const transfer = settlement.transfers[0];
+  const direction = transfer ? transfer.from + ' → ' + transfer.to + ' ' + formatAmount(transfer.amount) : '추가 송금 없음';
+  showToast(entry.item + ' 판매대금 보유자: ' + holder + ' · ' + direction);
+
+  if (entry.status === 'done') renderDone();
+  else renderList();
 }
 
 function setGroupDistributor(groupId, distributor) {
+  if (!distributor) return;
   const entries = state.entries.filter(function (entry) { return getEntryGroupId(entry) === groupId; });
   if (!entries.length) return;
 
   const members = Array.from(new Set(entries.flatMap(function (entry) { return entry.members || []; })));
-  if (distributor && !members.includes(distributor)) {
-    showToast('그룹 참여자만 메소 배분자로 지정할 수 있습니다.');
+  if (!members.includes(distributor)) {
+    showToast('그룹 참여자만 판매대금 보유자로 지정할 수 있습니다.');
     return;
   }
 
   const soldEntries = entries.filter(function (entry) { return !getEntryRecipient(entry); });
   if (!soldEntries.length) {
-    showToast('판매 정산 항목이 없어 메소 배분자를 지정할 수 없습니다.');
+    showToast('판매 정산 항목이 없어 일괄 변경할 수 없습니다.');
     return;
   }
 
   soldEntries.forEach(function (entry) {
     entry.sale = entry.sale || {};
-    if (distributor) entry.sale.sellerName = distributor;
-    else delete entry.sale.sellerName;
-
+    entry.sale.sellerName = distributor;
+    entry.sale.distributorUpdatedAt = new Date().toISOString();
     entry.payments = prunePayments(entry.payments || {}, entry.members || []);
-    if (distributor) entry.payments[distributor] = true;
+    entry.payments[distributor] = true;
 
     const rate = numberOrZero(entry.sale.cashRatePerBillion);
     if (rate > 0) {
@@ -2104,7 +2158,6 @@ function setGroupDistributor(groupId, distributor) {
       entry.sale.perPersonCash = roundWon(calc.perPerson * rate);
       entry.sale.transferCash = roundWon(entry.sale.perPersonCash * Math.max(0, (entry.members || []).length - 1));
     }
-    entry.sale.distributorUpdatedAt = new Date().toISOString();
   });
 
   const hasDone = entries.some(function (entry) { return entry.status === 'done'; });
@@ -2113,8 +2166,8 @@ function setGroupDistributor(groupId, distributor) {
 
   const settlement = calculateGroupSettlement(entries);
   const transfer = settlement.transfers[0];
-  const direction = transfer ? transfer.from + ' → ' + transfer.to : '추가 송금 없음';
-  showToast(distributor ? distributor + '님을 메소 배분자로 지정했습니다. ' + direction : '메소 배분자를 항목별 설정으로 돌렸습니다.');
+  const direction = transfer ? transfer.from + ' → ' + transfer.to + ' ' + formatAmount(transfer.amount) : '추가 송금 없음';
+  showToast('판매 항목 전체 보유자를 ' + distributor + '님으로 변경했습니다. ' + direction);
   if (hasDone) renderDone();
   else renderList();
 }
@@ -2217,11 +2270,12 @@ function pendingGroupCard(group) {
     const receiptLine = recipient
       ? '<span class="recipient-chip">🎁 ' + escapeHtml(recipient) + ' 직접 수령</span>'
       : '<span class="sale-chip">💰 판매 정산</span>';
+    const holderControl = renderEntrySaleHolderControl(entry);
     return '<div class="group-item">' +
       '<label class="group-item-check"><input type="checkbox" data-action="select-entry" data-id="' + escapeHtml(entry.id) + '"' + (selectedEntryIds.has(entry.id) ? ' checked' : '') + ' /></label>' +
       '<div class="group-item-main"><b>' + escapeHtml(entry.boss) + ' · ' + escapeHtml(entry.item) + '</b>' +
       '<span>' + escapeHtml(getEntryCategory(entry)) + ' · ' + formatAmount(calc.netAmount) + '</span>' +
-      '<div class="receipt-indicator">' + receiptLine + '</div></div>' +
+      '<div class="receipt-indicator">' + receiptLine + '</div>' + holderControl + '</div>' +
       '<button class="ghost small" data-action="edit-entry" data-id="' + escapeHtml(entry.id) + '">수정</button>' +
       '</div>';
   }).join('');
@@ -2245,20 +2299,19 @@ function completedGroupCard(group) {
     const receiptLine = recipient
       ? '<span class="recipient-chip">🎁 ' + escapeHtml(recipient) + ' 직접 수령</span>'
       : '<span class="sale-chip">💰 판매 정산</span>';
+    const holderControl = renderEntrySaleHolderControl(entry);
     return '<div class="group-item completed done-selectable">' +
       '<label class="group-item-check"><input type="checkbox" data-action="select-done-entry" data-id="' + escapeHtml(entry.id) + '"' + (selectedDoneEntryIds.has(entry.id) ? ' checked' : '') + ' /></label>' +
       '<div class="group-item-main"><b>' + escapeHtml(entry.boss) + ' · ' + escapeHtml(entry.item) + '</b>' +
       '<span>' + escapeHtml(getEntryCategory(entry)) + ' · ' + formatAmount(calc.netAmount) + '</span>' +
-      '<div class="receipt-indicator">' + receiptLine + '</div></div>' +
+      '<div class="receipt-indicator">' + receiptLine + '</div>' + holderControl + '</div>' +
       '<button class="secondary small" data-action="edit-entry" data-id="' + escapeHtml(entry.id) + '">수정</button>' +
       '</div>';
   }).join('');
 
   const transferRows = settlement.transfers.length
     ? settlement.transfers.map(function (transfer) {
-        const cash = (!settlement.mixedCashRates && settlement.cashRate > 0)
-          ? ' / ' + formatWon(transfer.amount * settlement.cashRate)
-          : '';
+        const cash = (!settlement.mixedCashRates && settlement.cashRate > 0) ? ' / ' + formatWon(transfer.amount * settlement.cashRate) : '';
         return '<div class="transfer-row"><b>' + escapeHtml(transfer.from) + ' → ' + escapeHtml(transfer.to) + '</b><span>' + formatAmount(transfer.amount) + cash + '</span></div>';
       }).join('')
     : '<div class="transfer-row"><b>추가 송금 없음</b><span>상계 완료</span></div>';
@@ -2268,11 +2321,8 @@ function completedGroupCard(group) {
   }).join('');
 
   return '<section class="group-card done-group">' +
-    '<div class="group-card-head">' +
-      '<label class="group-select"><input type="checkbox" data-action="select-done-group" data-group-id="' + escapeHtml(group.id) + '"' + (allSelected ? ' checked' : '') + ' /><span>' + escapeHtml(getGroupLabel(group)) + '</span></label>' +
-      '<span class="badge done">완료</span>' +
-    '</div>' +
-    '<div class="item-sub">완료 그룹 · ' + group.entries.length + '건 · 수정/재그룹 가능</div>' +
+    '<div class="group-card-head"><label class="group-select"><input type="checkbox" data-action="select-done-group" data-group-id="' + escapeHtml(group.id) + '"' + (allSelected ? ' checked' : '') + ' /><span>' + escapeHtml(getGroupLabel(group)) + '</span></label><span class="badge done">완료</span></div>' +
+    '<div class="item-sub">완료 그룹 · ' + group.entries.length + '건 · 판매대금 보유자도 항목별 수정 가능</div>' +
     '<div class="group-admin-row">' + renderGroupDistributorControl(group) + '</div>' +
     '<div class="group-total">그룹 총 가치 <b>' + formatAmount(settlement.totalValue) + '</b></div>' +
     '<div class="group-items">' + itemRows + '</div>' +
