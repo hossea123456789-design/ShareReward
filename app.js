@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.4.3';
+const APP_VERSION = '5.4.4';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 const MAPLE_ITEM_DB = Array.isArray(window.MAPLE_ITEM_DB) ? window.MAPLE_ITEM_DB : [];
 const MAPLE_ITEM_CATEGORIES = ['자동', '광휘의 보스 장신구', '칠흑의 보스 장신구', '여명의 보스 장신구', '보스 장신구', '에테르넬 장비', '아케인셰이드 장비', '앱솔랩스 장비', '루타비스 장비', '연마석', '익셉셔널 해머', '기타'];
@@ -1482,10 +1482,15 @@ function buildBatchShareText(entries) {
     group.entries.forEach(function (entry) {
       const calc = calculateEntry(entry);
       const recipient = getEntryRecipient(entry);
+      const memberCount = entry.members.length || 1;
+      const ownShare = calc.netAmount / memberCount;
+      const owedToOthers = calc.netAmount - ownShare;
+
       if (recipient) {
         lines.push('🎁 [직접 수령] ' + entry.boss + ' · ' + entry.item);
         lines.push(recipient + ' 수령 · 아이템 가치 ' + formatAmount(calc.netAmount) + ' · 경매장 수수료 미적용');
-        lines.push('1인 기본 지분: ' + formatAmount(calc.rawPerPerson));
+        lines.push('  · ' + recipient + ' 본인 몫 ' + formatAmount(ownShare));
+        lines.push('  · 다른 파티원 몫으로 정산할 금액 ' + formatAmount(owedToOthers));
       } else {
         lines.push('💰 [판매 정산] ' + entry.boss + ' · ' + entry.item);
         lines.push('정산 가치: ' + formatAmount(calc.netAmount) + ' · 1인 지분 ' + formatAmount(calc.rawPerPerson));
@@ -1493,64 +1498,69 @@ function buildBatchShareText(entries) {
       lines.push('');
     });
 
-    lines.push('총 정산 가치: ' + formatAmount(settlement.totalValue));
+    lines.push('정산 요약');
     lines.push('· 판매 정산 합계: ' + formatAmount(settlement.soldTotal));
-    if (settlement.directTotal > 0) lines.push('· 직접 수령 합계: ' + formatAmount(settlement.directTotal));
+    if (settlement.members.length) {
+      lines.push('· 판매분 1인 몫: ' + formatAmount(settlement.soldTotal / settlement.members.length));
+    }
+    if (settlement.directTotal > 0) {
+      lines.push('· 직접 수령 아이템 총가치: ' + formatAmount(settlement.directTotal) + ' (전체값을 차감하는 것이 아님)');
+    }
     if (sameRate) {
-      lines.push('현금 환산 기준: 억당 ' + formatWon(settlement.cashRate) + ' · 총 ' + formatWon(settlement.totalValue * settlement.cashRate));
+      lines.push('· 현금 환산 기준: 억당 ' + formatWon(settlement.cashRate));
     } else if (settlement.mixedCashRates) {
-      lines.push('현금 환산: 완료 시세가 서로 달라 메소 기준으로 계산');
+      lines.push('· 현금 환산: 완료 시세가 서로 달라 메소 기준으로 계산');
     }
 
     lines.push('');
-    lines.push('정산 계산 근거');
-    settlement.members.forEach(function (member) {
-      const totalShare = numberOrZero(settlement.entitlement[member]);
-      const soldShare = numberOrZero(settlement.soldEntitlement[member]);
-      const directShare = numberOrZero(settlement.directEntitlement[member]);
-      const direct = numberOrZero(settlement.directReceived[member]);
-      const directDiff = numberOrZero(settlement.directDifference[member]);
-      const sale = numberOrZero(settlement.saleHeld[member]);
-      const held = numberOrZero(settlement.received[member]);
-      const balance = numberOrZero(settlement.balances[member]);
-
-      lines.push('- ' + member);
-      lines.push('  · 판매분 받을 몫 ' + formatAmount(soldShare));
-      if (settlement.directTotal > 0) {
-        lines.push('  · 직접수령템 본인 지분 ' + formatAmount(directShare));
-        lines.push('  · 실제 직접 수령 ' + formatAmount(direct));
-        if (directDiff > 0.0000001) {
-          lines.push('  · 직접 수령 초과분 ' + formatAmount(directDiff) + ' → 현금 받을 몫에서 차감');
-        } else if (directDiff < -0.0000001) {
-          lines.push('  · 직접 수령 미수령분 ' + formatAmount(Math.abs(directDiff)) + ' → 현금으로 더 받아야 함');
-        }
-      }
-      if (sale > 0) lines.push('  · 판매대금 보유 ' + formatAmount(sale));
-
-      if (sale <= 0 && directDiff > 0.0000001 && balance < -0.0000001) {
-        lines.push('  → 판매분 몫 ' + formatAmount(soldShare) + ' - 직접 수령 초과분 ' + formatAmount(directDiff) + ' = ' + formatAmount(Math.abs(balance)) + ' 받아야 함');
-      } else if (sale <= 0 && directDiff < -0.0000001 && balance < -0.0000001) {
-        lines.push('  → 판매분 몫 ' + formatAmount(soldShare) + ' + 직접 미수령분 ' + formatAmount(Math.abs(directDiff)) + ' = ' + formatAmount(Math.abs(balance)) + ' 받아야 함');
-      } else if (balance > 0.0000001) {
-        lines.push('  → 현재 보유 ' + formatAmount(held) + ' - 전체 지분 ' + formatAmount(totalShare) + ' = ' + formatAmount(balance) + ' 전달해야 함');
-      } else if (balance < -0.0000001) {
-        lines.push('  → 전체 지분 ' + formatAmount(totalShare) + ' - 현재 보유 ' + formatAmount(held) + ' = ' + formatAmount(Math.abs(balance)) + ' 받아야 함');
-      } else {
-        lines.push('  → 추가 정산 없음');
-      }
-    });
-
+    lines.push('직접 수령 정산');
     if (recipients.length) {
-      lines.push('');
-      lines.push('직접 수령 반영');
       recipients.forEach(function (entry) {
         const calc = calculateEntry(entry);
         const recipient = getEntryRecipient(entry);
-        const memberShare = entry.members.length ? calc.netAmount / entry.members.length : 0;
-        lines.push('- ' + recipient + ': ' + entry.item + ' ' + formatAmount(calc.netAmount) + ' 직접 수령');
-        lines.push('  · 본인 지분 ' + formatAmount(memberShare) + ' / 초과 수령 ' + formatAmount(calc.netAmount - memberShare));
+        const memberCount = entry.members.length || 1;
+        const ownShare = calc.netAmount / memberCount;
+        const owedToOthers = calc.netAmount - ownShare;
+        lines.push('- ' + recipient + ' · ' + entry.item);
+        lines.push('  · 아이템 가치 ' + formatAmount(calc.netAmount));
+        lines.push('  · 본인 몫 ' + formatAmount(ownShare));
+        lines.push('  · 상대 파티원 몫 부담 ' + formatAmount(owedToOthers));
       });
+    } else {
+      lines.push('- 직접 수령 없음');
     }
+
+    lines.push('');
+    lines.push('최종 계산');
+    settlement.members.forEach(function (member) {
+      const soldShare = numberOrZero(settlement.soldEntitlement[member]);
+      const directNet = numberOrZero(settlement.directDifference[member]);
+      const balance = numberOrZero(settlement.balances[member]);
+      const saleHeld = numberOrZero(settlement.saleHeld[member]);
+
+      lines.push('- ' + member + ': 판매분 몫 ' + formatAmount(soldShare));
+      if (directNet > 0.0000001) {
+        lines.push('  - 직접수령으로 부담할 다른 파티원 몫 ' + formatAmount(directNet));
+      } else if (directNet < -0.0000001) {
+        lines.push('  + 다른 파티원 직접수령에서 받을 몫 ' + formatAmount(Math.abs(directNet)));
+      }
+
+      if (saleHeld <= 0) {
+        const receiveAmount = Math.max(0, -balance);
+        if (directNet > 0.0000001) {
+          lines.push('  = 실제 받을 금액 ' + formatAmount(soldShare) + ' - ' + formatAmount(directNet) + ' = ' + formatAmount(receiveAmount));
+        } else if (directNet < -0.0000001) {
+          lines.push('  = 실제 받을 금액 ' + formatAmount(soldShare) + ' + ' + formatAmount(Math.abs(directNet)) + ' = ' + formatAmount(receiveAmount));
+        } else {
+          lines.push('  = 실제 받을 금액 ' + formatAmount(receiveAmount));
+        }
+      } else {
+        lines.push('  · 현재 판매대금 보유 ' + formatAmount(saleHeld));
+        if (balance > 0.0000001) {
+          lines.push('  = 다른 파티원에게 전달할 금액 ' + formatAmount(balance));
+        }
+      }
+    });
 
     lines.push('');
     lines.push('최종 정산');
@@ -1562,8 +1572,11 @@ function buildBatchShareText(entries) {
     } else {
       lines.push('추가 송금 없음');
     }
+
     lines.push('');
+    lines.push('※ 직접 수령자는 아이템 전체값이 아니라 자기 몫을 제외한 다른 파티원 몫만 부담');
     lines.push('※ 화면 표시는 소수 2자리지만 최종 정산은 반올림 전 원값으로 계산');
+
     return lines.join('\n').replace(/\n{3,}/g, '\n\n');
   }).join('\n\n────────\n\n');
 }
