@@ -1248,3 +1248,38 @@ input:focus, textarea:focus, select:focus { border-color: rgba(255, 190, 61, 0.8
 .sync-progress-panel[data-state="running"] .sync-progress-fill {
   box-shadow: 0 0 14px rgba(255,190,61,.18);
 }
+
+
+/* v5.6.0 group meso distributor */
+.group-admin-row {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+  margin: 10px 0 2px;
+}
+.group-distributor {
+  display: grid;
+  grid-template-columns: auto minmax(150px, 220px);
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid rgba(90,167,255,.16);
+  border-radius: 13px;
+  background: rgba(90,167,255,.055);
+}
+.group-distributor > span {
+  color: #b9c8dc;
+  font-size: 12px;
+  font-weight: 850;
+}
+.group-distributor select {
+  min-height: 38px;
+  padding: 7px 10px;
+}
+@media (max-width: 560px) {
+  .group-distributor {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+}

@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.5.2';
+const APP_VERSION = '5.6.0';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 const MAPLE_ITEM_DB = Array.isArray(window.MAPLE_ITEM_DB) ? window.MAPLE_ITEM_DB : [];
 const MAPLE_ITEM_CATEGORIES = ['자동', '광휘의 보스 장신구', '칠흑의 보스 장신구', '여명의 보스 장신구', '보스 장신구', '에테르넬 장비', '아케인셰이드 장비', '앱솔랩스 장비', '루타비스 장비', '연마석', '익셉셔널 해머', '기타'];
@@ -1078,6 +1078,11 @@ function handleAppClick(event) {
 
 function handleAppChange(event) {
   const target = event.target;
+  if (target.matches('[data-action="set-group-distributor"]')) {
+    setGroupDistributor(target.dataset.groupId, target.value);
+    return;
+  }
+
   if (target.matches('[data-action="select-entry"]')) {
     if (target.checked) selectedEntryIds.add(target.dataset.id);
     else selectedEntryIds.delete(target.dataset.id);
@@ -1773,9 +1778,11 @@ function buildBatchShareText(entries) {
     const settlement = calculateGroupSettlement(group.entries);
     const dates = Array.from(new Set(group.entries.map(function (entry) { return formatDate(entry.date); })));
     const sameRate = !settlement.mixedCashRates && settlement.cashRate > 0;
+    const distributor = getGroupDistributor(group);
     const lines = [
       '정산 날짜: ' + dates.join(', '),
       '정산 인원: ' + settlement.members.length + '인',
+      '메소 배분: ' + (distributor || '항목별 지정'),
       '',
     ];
 
@@ -1805,12 +1812,12 @@ function buildBatchShareText(entries) {
       lines.push('판매분 ' + receiver + ' 몫: ' + formatAmount(soldShare));
       if (directNet > 0.0000001) {
         lines.push('직접 수령 상계: -' + formatAmount(directNet));
-        lines.push('실제 지급: ' + formatAmount(soldShare) + ' - ' + formatAmount(directNet) + ' = ' + formatAmount(Math.max(0, -balance)));
+        lines.push('실제 수령: ' + formatAmount(soldShare) + ' - ' + formatAmount(directNet) + ' = ' + formatAmount(Math.max(0, -balance)));
       } else if (directNet < -0.0000001) {
         lines.push('직접 수령 상계: +' + formatAmount(Math.abs(directNet)));
-        lines.push('실제 지급: ' + formatAmount(soldShare) + ' + ' + formatAmount(Math.abs(directNet)) + ' = ' + formatAmount(Math.max(0, -balance)));
+        lines.push('실제 수령: ' + formatAmount(soldShare) + ' + ' + formatAmount(Math.abs(directNet)) + ' = ' + formatAmount(Math.max(0, -balance)));
       } else {
-        lines.push('실제 지급: ' + formatAmount(Math.max(0, -balance)));
+        lines.push('실제 수령: ' + formatAmount(Math.max(0, -balance)));
       }
       lines.push('');
     }
@@ -2040,6 +2047,78 @@ function getExpandedSelectedPendingEntries(selected) {
   return state.entries.filter(function (entry) { return isPendingEntry(entry) && ids.has(getEntryGroupId(entry)); });
 }
 
+function getGroupDistributor(groupOrEntries) {
+  const entries = Array.isArray(groupOrEntries)
+    ? groupOrEntries
+    : ((groupOrEntries && groupOrEntries.entries) || []);
+  const soldEntries = entries.filter(function (entry) { return !getEntryRecipient(entry); });
+  if (!soldEntries.length) return '';
+  const names = Array.from(new Set(soldEntries.map(function (entry) {
+    return entry.sale?.sellerName || entry.members?.[0] || '';
+  }).filter(Boolean)));
+  return names.length === 1 ? names[0] : '';
+}
+
+function renderGroupDistributorControl(group) {
+  const settlement = calculateGroupSettlement(group.entries);
+  const members = settlement.members || [];
+  if (!members.length) return '';
+  const current = getGroupDistributor(group);
+  const options = ['<option value=""' + (current ? '' : ' selected') + '>항목별 지정</option>'].concat(
+    members.map(function (member) {
+      return '<option value="' + escapeHtml(member) + '"' + (member === current ? ' selected' : '') + '>' + escapeHtml(member) + '</option>';
+    })
+  ).join('');
+  return '<label class="group-distributor"><span>메소 배분자</span><select data-action="set-group-distributor" data-group-id="' +
+    escapeHtml(group.id) + '">' + options + '</select></label>';
+}
+
+function setGroupDistributor(groupId, distributor) {
+  const entries = state.entries.filter(function (entry) { return getEntryGroupId(entry) === groupId; });
+  if (!entries.length) return;
+
+  const members = Array.from(new Set(entries.flatMap(function (entry) { return entry.members || []; })));
+  if (distributor && !members.includes(distributor)) {
+    showToast('그룹 참여자만 메소 배분자로 지정할 수 있습니다.');
+    return;
+  }
+
+  const soldEntries = entries.filter(function (entry) { return !getEntryRecipient(entry); });
+  if (!soldEntries.length) {
+    showToast('판매 정산 항목이 없어 메소 배분자를 지정할 수 없습니다.');
+    return;
+  }
+
+  soldEntries.forEach(function (entry) {
+    entry.sale = entry.sale || {};
+    if (distributor) entry.sale.sellerName = distributor;
+    else delete entry.sale.sellerName;
+
+    entry.payments = prunePayments(entry.payments || {}, entry.members || []);
+    if (distributor) entry.payments[distributor] = true;
+
+    const rate = numberOrZero(entry.sale.cashRatePerBillion);
+    if (rate > 0) {
+      const calc = calculateEntry(entry);
+      entry.sale.totalCash = roundWon(calc.netAmount * rate);
+      entry.sale.perPersonCash = roundWon(calc.perPerson * rate);
+      entry.sale.transferCash = roundWon(entry.sale.perPersonCash * Math.max(0, (entry.members || []).length - 1));
+    }
+    entry.sale.distributorUpdatedAt = new Date().toISOString();
+  });
+
+  const hasDone = entries.some(function (entry) { return entry.status === 'done'; });
+  if (hasDone) refreshLatestShareForGroup(groupId);
+  saveState();
+
+  const settlement = calculateGroupSettlement(entries);
+  const transfer = settlement.transfers[0];
+  const direction = transfer ? transfer.from + ' → ' + transfer.to : '추가 송금 없음';
+  showToast(distributor ? distributor + '님을 메소 배분자로 지정했습니다. ' + direction : '메소 배분자를 항목별 설정으로 돌렸습니다.');
+  if (hasDone) renderDone();
+  else renderList();
+}
+
 function calculateGroupSettlement(entries) {
   const entitlement = {};
   const soldEntitlement = {};
@@ -2149,6 +2228,7 @@ function pendingGroupCard(group) {
   return '<section class="group-card">' +
     '<div class="group-card-head"><label class="group-select"><input type="checkbox" data-action="select-group" data-group-id="' + escapeHtml(group.id) + '"' + (allSelected ? ' checked' : '') + ' /><span>' + escapeHtml(getGroupLabel(group)) + '</span></label>' +
     '<span class="badge waiting">정산대기</span></div>' +
+    '<div class="group-admin-row">' + renderGroupDistributorControl(group) + '</div>' +
     '<div class="group-total">그룹 총 가치 <b>' + formatAmount(settlement.totalValue) + '</b></div>' +
     '<div class="group-items">' + itemRows + '</div>' +
     '<div class="item-actions"><button class="secondary" data-action="add-to-group" data-group-id="' + escapeHtml(group.id) + '">+ 이 그룹에 추가</button>' +
@@ -2193,6 +2273,7 @@ function completedGroupCard(group) {
       '<span class="badge done">완료</span>' +
     '</div>' +
     '<div class="item-sub">완료 그룹 · ' + group.entries.length + '건 · 수정/재그룹 가능</div>' +
+    '<div class="group-admin-row">' + renderGroupDistributorControl(group) + '</div>' +
     '<div class="group-total">그룹 총 가치 <b>' + formatAmount(settlement.totalValue) + '</b></div>' +
     '<div class="group-items">' + itemRows + '</div>' +
     (recipientSummary ? '<div class="recipient-summary-box"><h3>직접 수령 반영</h3>' + recipientSummary + '</div>' : '') +
