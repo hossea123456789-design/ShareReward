@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#111318" />
   <title>보스 정산 공유 웹앱</title>
-  <link rel="stylesheet" href="./style.css?v=5.4.5" />
+  <link rel="stylesheet" href="./style.css?v=5.5.0" />
 </head>
 <body>
   <div class="app-shell">
@@ -19,6 +19,22 @@
         <button id="quickAddBtn" class="primary small">+ 정산 등록</button>
       </div>
     </header>
+
+    <section id="syncProgressPanel" class="sync-progress-panel" hidden aria-live="polite" aria-atomic="true">
+      <div class="sync-progress-head">
+        <div>
+          <span class="sync-progress-eyebrow">SYNC PROGRESS</span>
+          <strong id="syncProgressTitle">공유 데이터 동기화</strong>
+        </div>
+        <b id="syncProgressPercent">0%</b>
+      </div>
+      <div class="sync-progress-track" aria-hidden="true">
+        <div id="syncProgressFill" class="sync-progress-fill"></div>
+      </div>
+      <p id="syncProgressMessage" class="sync-progress-message">동기화를 준비하고 있습니다.</p>
+      <div id="syncProgressSteps" class="sync-progress-steps"></div>
+      <div id="syncProgressStatus" class="sync-progress-status" hidden></div>
+    </section>
 
     <main id="app" class="content" aria-live="polite"></main>
 
@@ -159,7 +175,7 @@
   <script>
     window.BOSS_SPLIT_REMOTE_URL = 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec';
   </script>
-  <script src="./maple-item-db.js?v=5.4.5"></script>
-  <script src="./app.js?v=5.4.5"></script>
+  <script src="./maple-item-db.js?v=5.5.0"></script>
+  <script src="./app.js?v=5.5.0"></script>
 </body>
 </html>

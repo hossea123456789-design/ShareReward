@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.4.5';
+const APP_VERSION = '5.5.0';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 const MAPLE_ITEM_DB = Array.isArray(window.MAPLE_ITEM_DB) ? window.MAPLE_ITEM_DB : [];
 const MAPLE_ITEM_CATEGORIES = ['자동', '광휘의 보스 장신구', '칠흑의 보스 장신구', '여명의 보스 장신구', '보스 장신구', '에테르넬 장비', '아케인셰이드 장비', '앱솔랩스 장비', '루타비스 장비', '연마석', '익셉셔널 해머', '기타'];
@@ -33,6 +33,11 @@ let state = loadState();
 let toastTimer = null;
 let remoteSaveTimer = null;
 let remoteStatus = 'local';
+let remoteOperationRunning = false;
+let remotePendingSave = false;
+let syncProgressHideTimer = null;
+let syncProgressMode = '';
+let syncProgressPercent = 0;
 let remoteUpdatedAt = localStorage.getItem('bossSplitLedger.remoteUpdatedAt.v1') || '';
 let suppressRemoteSave = false;
 let selectedEntryIds = new Set();
@@ -239,6 +244,125 @@ function updateSyncBadge() {
   badge.className = `sync-badge ${remoteStatus}`;
 }
 
+
+const SYNC_PROGRESS_STEPS = {
+  load: [
+    { id: 'prepare', label: '불러오기 준비' },
+    { id: 'connect', label: '공유 저장소 연결' },
+    { id: 'transfer', label: '데이터 수신' },
+    { id: 'apply', label: '화면 반영' },
+  ],
+  save: [
+    { id: 'prepare', label: '변경사항 정리' },
+    { id: 'connect', label: '공유 저장소 연결' },
+    { id: 'transfer', label: '데이터 전송' },
+    { id: 'apply', label: '저장 확인' },
+  ],
+};
+
+function getSyncProgressSteps(mode) {
+  return SYNC_PROGRESS_STEPS[mode] || SYNC_PROGRESS_STEPS.load;
+}
+
+function updateSyncActionControls() {
+  document.querySelectorAll('[data-action="pull-remote"], [data-action="push-remote"], [data-action="save-remote-url"]').forEach(function (button) {
+    button.disabled = remoteOperationRunning;
+  });
+}
+
+function renderSyncProgressSteps(mode, activeStepId = '') {
+  const container = document.getElementById('syncProgressSteps');
+  if (!container) return;
+  const steps = getSyncProgressSteps(mode);
+  const activeIndex = Math.max(0, steps.findIndex(function (step) { return step.id === activeStepId; }));
+  container.innerHTML = steps.map(function (step, index) {
+    let stateClass = '';
+    let marker = index + 1;
+    if (syncProgressPercent >= 100 || index < activeIndex) {
+      stateClass = ' done';
+      marker = '✓';
+    } else if (index === activeIndex) {
+      stateClass = ' active';
+    }
+    return '<div class="sync-progress-step' + stateClass + '" data-progress-step="' + step.id + '">' +
+      '<span>' + marker + '</span><b>' + escapeHtml(step.label) + '</b></div>';
+  }).join('');
+}
+
+function startSyncProgress(mode, message) {
+  clearTimeout(syncProgressHideTimer);
+  syncProgressMode = mode === 'save' ? 'save' : 'load';
+  syncProgressPercent = 0;
+  const panel = document.getElementById('syncProgressPanel');
+  const title = document.getElementById('syncProgressTitle');
+  const status = document.getElementById('syncProgressStatus');
+  if (!panel) return;
+  panel.hidden = false;
+  panel.dataset.state = 'running';
+  if (title) title.textContent = syncProgressMode === 'save' ? '공유 데이터 저장' : '공유 데이터 불러오기';
+  if (status) {
+    status.hidden = true;
+    status.className = 'sync-progress-status';
+    status.textContent = '';
+  }
+  setSyncProgress('prepare', 8, message || (syncProgressMode === 'save' ? '변경사항을 정리하고 있습니다.' : '공유 데이터를 불러올 준비를 하고 있습니다.'));
+  updateSyncActionControls();
+}
+
+function setSyncProgress(stepId, percent, message) {
+  const panel = document.getElementById('syncProgressPanel');
+  if (!panel || panel.hidden) return;
+  const next = Math.max(syncProgressPercent, Math.min(99, Math.max(0, Number(percent) || 0)));
+  syncProgressPercent = next;
+  const fill = document.getElementById('syncProgressFill');
+  const percentEl = document.getElementById('syncProgressPercent');
+  const messageEl = document.getElementById('syncProgressMessage');
+  if (fill) fill.style.width = next + '%';
+  if (percentEl) percentEl.textContent = Math.round(next) + '%';
+  if (messageEl && message) messageEl.textContent = message;
+  renderSyncProgressSteps(syncProgressMode, stepId);
+}
+
+function finishSyncProgress(success, message) {
+  const panel = document.getElementById('syncProgressPanel');
+  const fill = document.getElementById('syncProgressFill');
+  const percentEl = document.getElementById('syncProgressPercent');
+  const messageEl = document.getElementById('syncProgressMessage');
+  const status = document.getElementById('syncProgressStatus');
+  if (!panel) return;
+
+  clearTimeout(syncProgressHideTimer);
+  if (success) {
+    syncProgressPercent = 100;
+    panel.dataset.state = 'success';
+    if (fill) fill.style.width = '100%';
+    if (percentEl) percentEl.textContent = '100%';
+    if (messageEl) messageEl.textContent = message || '동기화가 완료되었습니다.';
+    renderSyncProgressSteps(syncProgressMode, '__complete__');
+    if (status) {
+      status.hidden = false;
+      status.className = 'sync-progress-status success';
+      status.textContent = '최신 데이터 반영 완료';
+    }
+    syncProgressHideTimer = setTimeout(function () {
+      panel.hidden = true;
+      panel.dataset.state = '';
+    }, 950);
+  } else {
+    panel.dataset.state = 'error';
+    if (messageEl) messageEl.textContent = message || '동기화 중 오류가 발생했습니다.';
+    if (status) {
+      status.hidden = false;
+      status.className = 'sync-progress-status error';
+      status.textContent = '완료되지 않았습니다. 기존 데이터는 유지됩니다.';
+    }
+    syncProgressHideTimer = setTimeout(function () {
+      panel.hidden = true;
+      panel.dataset.state = '';
+    }, 4500);
+  }
+}
+
 function setRemoteStatus(status, message = '') {
   remoteStatus = status;
   updateSyncBadge();
@@ -259,7 +383,13 @@ function queueRemoteSave() {
     return;
   }
   clearTimeout(remoteSaveTimer);
-  remoteSaveTimer = setTimeout(() => pushRemoteState({ silent: true }), 700);
+  remoteSaveTimer = setTimeout(function () {
+    if (remoteOperationRunning) {
+      remotePendingSave = true;
+      return;
+    }
+    pushRemoteState({ silent: true });
+  }, 700);
 }
 
 async function pushRemoteState({ silent = false } = {}) {
@@ -267,18 +397,48 @@ async function pushRemoteState({ silent = false } = {}) {
   if (!url) {
     if (!silent) showToast('설정에서 Apps Script 웹앱 URL을 먼저 입력하세요.');
     setRemoteStatus('local');
-    return;
+    return false;
   }
+
+  if (remoteOperationRunning) {
+    if (silent) remotePendingSave = true;
+    else showToast('다른 동기화 작업이 진행 중입니다.');
+    return false;
+  }
+
+  remoteOperationRunning = true;
+  updateSyncActionControls();
+  startSyncProgress('save', '변경사항을 정리하고 있습니다.');
   setRemoteStatus('saving');
+
   try {
-    const result = await remoteRequest(url, 'save', { state: serializeSharedState(), clientId });
+    setSyncProgress('prepare', 16, '공유 저장용 데이터를 준비했습니다.');
+    const payload = { state: serializeSharedState(), clientId: clientId };
+    setSyncProgress('connect', 28, '공유 저장소에 연결하고 있습니다.');
+
+    const result = await remoteRequest(url, 'save', payload);
     if (!result?.ok) throw new Error(result?.message || 'remote save failed');
+
+    setSyncProgress('apply', 86, '서버의 저장 결과를 확인하고 있습니다.');
     remoteUpdatedAt = result.updatedAt || new Date().toISOString();
     localStorage.setItem('bossSplitLedger.remoteUpdatedAt.v1', remoteUpdatedAt);
+    setSyncProgress('apply', 96, '저장 완료 상태를 화면에 반영하고 있습니다.');
     setRemoteStatus('saved', silent ? '' : '공유 저장소에 올렸습니다.');
+    finishSyncProgress(true, '공유 저장이 완료되었습니다.');
+    return true;
   } catch (error) {
     console.warn(error);
     setRemoteStatus('error', silent ? '' : '공유 저장에 실패했습니다. URL/배포 권한을 확인하세요.');
+    finishSyncProgress(false, '공유 저장에 실패했습니다.');
+    return false;
+  } finally {
+    remoteOperationRunning = false;
+    updateSyncActionControls();
+    if (remotePendingSave) {
+      remotePendingSave = false;
+      clearTimeout(remoteSaveTimer);
+      remoteSaveTimer = setTimeout(function () { pushRemoteState({ silent: true }); }, 120);
+    }
   }
 }
 
@@ -287,17 +447,36 @@ async function pullRemoteState({ silent = false, initial = false } = {}) {
   if (!url) {
     if (!silent) showToast('설정에서 Apps Script 웹앱 URL을 먼저 입력하세요.');
     setRemoteStatus('local');
-    return;
+    return false;
   }
+
+  if (remoteOperationRunning) {
+    if (!silent) showToast('다른 동기화 작업이 진행 중입니다.');
+    return false;
+  }
+
+  remoteOperationRunning = true;
+  updateSyncActionControls();
+  startSyncProgress('load', '공유 데이터를 불러올 준비를 하고 있습니다.');
   setRemoteStatus('loading');
+
   try {
+    setSyncProgress('connect', 26, '공유 저장소에 연결하고 있습니다.');
     const result = await remoteRequest(url, 'load');
     if (!result?.ok) throw new Error(result?.message || 'remote load failed');
+
     if (result.empty) {
-      await pushRemoteState({ silent: true });
-      if (!silent) showToast('공유 저장소가 비어 있어 현재 데이터를 올렸습니다.');
-      return;
+      setSyncProgress('transfer', 72, '공유 저장소가 비어 있어 현재 데이터를 최초 저장합니다.');
+      const saveResult = await remoteRequest(url, 'save', { state: serializeSharedState(), clientId: clientId });
+      if (!saveResult?.ok) throw new Error(saveResult?.message || 'initial remote save failed');
+      remoteUpdatedAt = saveResult.updatedAt || new Date().toISOString();
+      localStorage.setItem('bossSplitLedger.remoteUpdatedAt.v1', remoteUpdatedAt);
+      setRemoteStatus('saved', silent ? '' : '공유 저장소가 비어 있어 현재 데이터를 올렸습니다.');
+      finishSyncProgress(true, '최초 공유 저장이 완료되었습니다.');
+      return true;
     }
+
+    setSyncProgress('apply', 84, '받은 데이터를 확인하고 화면에 적용하고 있습니다.');
     const keepTab = initial ? 'home' : (state.activeTab || 'home');
     const normalized = normalizeState(result.state || {});
     state = { ...normalized, activeTab: keepTab, detailId: null };
@@ -306,40 +485,67 @@ async function pullRemoteState({ silent = false, initial = false } = {}) {
     suppressRemoteSave = true;
     saveState({ localOnly: true });
     suppressRemoteSave = false;
-    setRemoteStatus('saved', silent ? '' : '공유 데이터를 불러왔습니다.');
     refreshRecentShareFromState();
+    setSyncProgress('apply', 96, '최신 데이터로 화면을 다시 구성하고 있습니다.');
+    setRemoteStatus('saved', silent ? '' : '공유 데이터를 불러왔습니다.');
     render();
+    finishSyncProgress(true, '최신 공유 데이터를 반영했습니다.');
+    return true;
   } catch (error) {
     console.warn(error);
+    suppressRemoteSave = false;
     setRemoteStatus('error', silent ? '' : '공유 데이터 불러오기에 실패했습니다.');
+    finishSyncProgress(false, '공유 데이터 불러오기에 실패했습니다.');
+    return false;
+  } finally {
+    remoteOperationRunning = false;
+    updateSyncActionControls();
+    if (remotePendingSave) {
+      remotePendingSave = false;
+      clearTimeout(remoteSaveTimer);
+      remoteSaveTimer = setTimeout(function () { pushRemoteState({ silent: true }); }, 120);
+    }
   }
 }
 
 async function remoteRequest(baseUrl, action, payload = null) {
   const url = normalizeRemoteUrl(baseUrl);
+
   if (action === 'load') {
     const queryUrl = `${url}?action=load&t=${Date.now()}`;
+    setSyncProgress('connect', 34, '서버 응답을 기다리고 있습니다.');
     try {
       const res = await fetch(queryUrl, { method: 'GET', cache: 'no-store', redirect: 'follow' });
-      return await res.json();
+      const data = await res.json();
+      setSyncProgress('transfer', 70, '공유 데이터를 수신했습니다.');
+      return data;
     } catch (error) {
-      return jsonpRequest(`${queryUrl}&callback=__bossSplitJsonp`);
+      setSyncProgress('connect', 46, '직접 연결이 어려워 호환 방식으로 다시 연결하고 있습니다.');
+      const data = await jsonpRequest(`${queryUrl}&callback=__bossSplitJsonp`);
+      setSyncProgress('transfer', 70, '호환 방식으로 공유 데이터를 수신했습니다.');
+      return data;
     }
   }
 
-  const body = JSON.stringify({ action, ...payload });
+  const body = JSON.stringify({ action: action, ...payload });
+  setSyncProgress('transfer', 42, '공유 저장소로 데이터를 전송하고 있습니다.');
   try {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body,
+      body: body,
       redirect: 'follow',
     });
-    return await res.json();
+    const data = await res.json();
+    setSyncProgress('transfer', 76, '서버가 데이터를 수신했습니다.');
+    return data;
   } catch (error) {
     if (body.length > 90000) throw error;
+    setSyncProgress('transfer', 54, '직접 전송이 어려워 호환 방식으로 다시 전송하고 있습니다.');
     const fallbackUrl = `${url}?action=${encodeURIComponent(action)}&data=${encodeURIComponent(body)}&t=${Date.now()}&callback=__bossSplitJsonp`;
-    return jsonpRequest(fallbackUrl);
+    const data = await jsonpRequest(fallbackUrl);
+    setSyncProgress('transfer', 76, '호환 방식으로 서버 전송을 마쳤습니다.');
+    return data;
   }
 }
 
@@ -370,6 +576,7 @@ function render() {
   updateSyncBadge();
   if (state.detailId) {
     renderDetail(state.detailId);
+    updateSyncActionControls();
     return;
   }
   const map = {
@@ -380,6 +587,7 @@ function render() {
     settings: renderSettings,
   };
   (map[state.activeTab] || renderHome)();
+  updateSyncActionControls();
 }
 
 function updateNav() {
@@ -847,9 +1055,13 @@ function saveRemoteUrlFromSettings() {
 
 function clearRemoteUrl() {
   if (!confirm('공유 연결을 해제할까요? 현재 브라우저의 로컬 데이터는 유지됩니다.')) return;
+  clearTimeout(remoteSaveTimer);
+  remotePendingSave = false;
   localStorage.removeItem(REMOTE_URL_KEY);
   localStorage.removeItem('bossSplitLedger.remoteUpdatedAt.v1');
   remoteUpdatedAt = '';
+  const panel = document.getElementById('syncProgressPanel');
+  if (panel) panel.hidden = true;
   setRemoteStatus('local', '공유 연결을 해제했습니다.');
   render();
 }
