@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.5.0';
+const APP_VERSION = '5.5.1';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 const MAPLE_ITEM_DB = Array.isArray(window.MAPLE_ITEM_DB) ? window.MAPLE_ITEM_DB : [];
 const MAPLE_ITEM_CATEGORIES = ['자동', '광휘의 보스 장신구', '칠흑의 보스 장신구', '여명의 보스 장신구', '보스 장신구', '에테르넬 장비', '아케인셰이드 장비', '앱솔랩스 장비', '루타비스 장비', '연마석', '익셉셔널 해머', '기타'];
@@ -38,6 +38,7 @@ let remotePendingSave = false;
 let syncProgressHideTimer = null;
 let syncProgressMode = '';
 let syncProgressPercent = 0;
+let syncProgressPulseTimer = null;
 let remoteUpdatedAt = localStorage.getItem('bossSplitLedger.remoteUpdatedAt.v1') || '';
 let suppressRemoteSave = false;
 let selectedEntryIds = new Set();
@@ -271,95 +272,147 @@ function updateSyncActionControls() {
 }
 
 function renderSyncProgressSteps(mode, activeStepId = '') {
-  const container = document.getElementById('syncProgressSteps');
-  if (!container) return;
-  const steps = getSyncProgressSteps(mode);
-  const activeIndex = Math.max(0, steps.findIndex(function (step) { return step.id === activeStepId; }));
-  container.innerHTML = steps.map(function (step, index) {
-    let stateClass = '';
-    let marker = index + 1;
-    if (syncProgressPercent >= 100 || index < activeIndex) {
-      stateClass = ' done';
-      marker = '✓';
-    } else if (index === activeIndex) {
-      stateClass = ' active';
+  try {
+    const container = document.getElementById('syncProgressSteps');
+    if (!container) return;
+    const steps = getSyncProgressSteps(mode);
+    let activeIndex = steps.findIndex(function (step) { return step.id === activeStepId; });
+    if (activeStepId === '__complete__') activeIndex = steps.length;
+    if (activeIndex < 0) activeIndex = 0;
+    container.innerHTML = steps.map(function (step, index) {
+      let stateClass = '';
+      let marker = index + 1;
+      if (syncProgressPercent >= 100 || index < activeIndex) {
+        stateClass = ' done';
+        marker = '✓';
+      } else if (index === activeIndex) {
+        stateClass = ' active';
+      }
+      return '<div class="sync-progress-step' + stateClass + '" data-progress-step="' + step.id + '">' +
+        '<span>' + marker + '</span><b>' + step.label + '</b></div>';
+    }).join('');
+  } catch (error) {
+    console.warn('progress steps render failed', error);
+  }
+}
+
+function waitForProgressPaint() {
+  return new Promise(function (resolve) {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(function () { requestAnimationFrame(resolve); });
+    } else {
+      setTimeout(resolve, 16);
     }
-    return '<div class="sync-progress-step' + stateClass + '" data-progress-step="' + step.id + '">' +
-      '<span>' + marker + '</span><b>' + escapeHtml(step.label) + '</b></div>';
-  }).join('');
+  });
+}
+
+function stopSyncProgressPulse() {
+  if (syncProgressPulseTimer !== null) {
+    clearInterval(syncProgressPulseTimer);
+    syncProgressPulseTimer = null;
+  }
+}
+
+function startSyncProgressPulse(stepId, ceiling, message) {
+  stopSyncProgressPulse();
+  syncProgressPulseTimer = setInterval(function () {
+    if (!remoteOperationRunning) {
+      stopSyncProgressPulse();
+      return;
+    }
+    if (syncProgressPercent >= ceiling) return;
+    const remaining = ceiling - syncProgressPercent;
+    const increment = Math.max(1, Math.min(3, Math.ceil(remaining * 0.18)));
+    setSyncProgress(stepId, Math.min(ceiling, syncProgressPercent + increment), message);
+  }, 380);
 }
 
 function startSyncProgress(mode, message) {
-  clearTimeout(syncProgressHideTimer);
-  syncProgressMode = mode === 'save' ? 'save' : 'load';
-  syncProgressPercent = 0;
-  const panel = document.getElementById('syncProgressPanel');
-  const title = document.getElementById('syncProgressTitle');
-  const status = document.getElementById('syncProgressStatus');
-  if (!panel) return;
-  panel.hidden = false;
-  panel.dataset.state = 'running';
-  if (title) title.textContent = syncProgressMode === 'save' ? '공유 데이터 저장' : '공유 데이터 불러오기';
-  if (status) {
-    status.hidden = true;
-    status.className = 'sync-progress-status';
-    status.textContent = '';
+  try {
+    clearTimeout(syncProgressHideTimer);
+    stopSyncProgressPulse();
+    syncProgressMode = mode === 'save' ? 'save' : 'load';
+    syncProgressPercent = 0;
+    const panel = document.getElementById('syncProgressPanel');
+    const title = document.getElementById('syncProgressTitle');
+    const status = document.getElementById('syncProgressStatus');
+    if (!panel) return;
+    panel.hidden = false;
+    panel.dataset.state = 'running';
+    if (title) title.textContent = syncProgressMode === 'save' ? '공유 데이터 저장' : '공유 데이터 불러오기';
+    if (status) {
+      status.hidden = true;
+      status.className = 'sync-progress-status';
+      status.textContent = '';
+    }
+    setSyncProgress('prepare', 8, message || (syncProgressMode === 'save' ? '변경사항을 정리하고 있습니다.' : '공유 데이터를 불러올 준비를 하고 있습니다.'));
+    updateSyncActionControls();
+  } catch (error) {
+    console.warn('progress start failed', error);
   }
-  setSyncProgress('prepare', 8, message || (syncProgressMode === 'save' ? '변경사항을 정리하고 있습니다.' : '공유 데이터를 불러올 준비를 하고 있습니다.'));
-  updateSyncActionControls();
 }
 
 function setSyncProgress(stepId, percent, message) {
-  const panel = document.getElementById('syncProgressPanel');
-  if (!panel || panel.hidden) return;
-  const next = Math.max(syncProgressPercent, Math.min(99, Math.max(0, Number(percent) || 0)));
-  syncProgressPercent = next;
-  const fill = document.getElementById('syncProgressFill');
-  const percentEl = document.getElementById('syncProgressPercent');
-  const messageEl = document.getElementById('syncProgressMessage');
-  if (fill) fill.style.width = next + '%';
-  if (percentEl) percentEl.textContent = Math.round(next) + '%';
-  if (messageEl && message) messageEl.textContent = message;
-  renderSyncProgressSteps(syncProgressMode, stepId);
+  try {
+    const panel = document.getElementById('syncProgressPanel');
+    if (!panel || panel.hidden) return;
+    const requested = Math.min(99, Math.max(0, Number(percent) || 0));
+    const next = Math.max(syncProgressPercent, requested);
+    syncProgressPercent = next;
+    const fill = document.getElementById('syncProgressFill');
+    const percentEl = document.getElementById('syncProgressPercent');
+    const messageEl = document.getElementById('syncProgressMessage');
+    if (fill) fill.style.width = next + '%';
+    if (percentEl) percentEl.textContent = Math.round(next) + '%';
+    if (messageEl && message) messageEl.textContent = message;
+    renderSyncProgressSteps(syncProgressMode, stepId);
+  } catch (error) {
+    console.warn('progress update failed', error);
+  }
 }
 
 function finishSyncProgress(success, message) {
-  const panel = document.getElementById('syncProgressPanel');
-  const fill = document.getElementById('syncProgressFill');
-  const percentEl = document.getElementById('syncProgressPercent');
-  const messageEl = document.getElementById('syncProgressMessage');
-  const status = document.getElementById('syncProgressStatus');
-  if (!panel) return;
+  try {
+    stopSyncProgressPulse();
+    const panel = document.getElementById('syncProgressPanel');
+    const fill = document.getElementById('syncProgressFill');
+    const percentEl = document.getElementById('syncProgressPercent');
+    const messageEl = document.getElementById('syncProgressMessage');
+    const status = document.getElementById('syncProgressStatus');
+    if (!panel) return;
 
-  clearTimeout(syncProgressHideTimer);
-  if (success) {
-    syncProgressPercent = 100;
-    panel.dataset.state = 'success';
-    if (fill) fill.style.width = '100%';
-    if (percentEl) percentEl.textContent = '100%';
-    if (messageEl) messageEl.textContent = message || '동기화가 완료되었습니다.';
-    renderSyncProgressSteps(syncProgressMode, '__complete__');
-    if (status) {
-      status.hidden = false;
-      status.className = 'sync-progress-status success';
-      status.textContent = '최신 데이터 반영 완료';
+    clearTimeout(syncProgressHideTimer);
+    if (success) {
+      syncProgressPercent = 100;
+      panel.dataset.state = 'success';
+      if (fill) fill.style.width = '100%';
+      if (percentEl) percentEl.textContent = '100%';
+      if (messageEl) messageEl.textContent = message || '동기화가 완료되었습니다.';
+      renderSyncProgressSteps(syncProgressMode, '__complete__');
+      if (status) {
+        status.hidden = false;
+        status.className = 'sync-progress-status success';
+        status.textContent = '최신 데이터 반영 완료';
+      }
+      syncProgressHideTimer = setTimeout(function () {
+        panel.hidden = true;
+        panel.dataset.state = '';
+      }, 1100);
+    } else {
+      panel.dataset.state = 'error';
+      if (messageEl) messageEl.textContent = message || '동기화 중 오류가 발생했습니다.';
+      if (status) {
+        status.hidden = false;
+        status.className = 'sync-progress-status error';
+        status.textContent = '완료되지 않았습니다. 기존 데이터는 유지됩니다.';
+      }
+      syncProgressHideTimer = setTimeout(function () {
+        panel.hidden = true;
+        panel.dataset.state = '';
+      }, 4500);
     }
-    syncProgressHideTimer = setTimeout(function () {
-      panel.hidden = true;
-      panel.dataset.state = '';
-    }, 950);
-  } else {
-    panel.dataset.state = 'error';
-    if (messageEl) messageEl.textContent = message || '동기화 중 오류가 발생했습니다.';
-    if (status) {
-      status.hidden = false;
-      status.className = 'sync-progress-status error';
-      status.textContent = '완료되지 않았습니다. 기존 데이터는 유지됩니다.';
-    }
-    syncProgressHideTimer = setTimeout(function () {
-      panel.hidden = true;
-      panel.dataset.state = '';
-    }, 4500);
+  } catch (error) {
+    console.warn('progress finish failed', error);
   }
 }
 
@@ -408,15 +461,20 @@ async function pushRemoteState({ silent = false } = {}) {
 
   remoteOperationRunning = true;
   updateSyncActionControls();
-  startSyncProgress('save', '변경사항을 정리하고 있습니다.');
-  setRemoteStatus('saving');
 
   try {
+    startSyncProgress('save', '변경사항을 정리하고 있습니다.');
+    setRemoteStatus('saving');
+    await waitForProgressPaint();
+
     setSyncProgress('prepare', 16, '공유 저장용 데이터를 준비했습니다.');
     const payload = { state: serializeSharedState(), clientId: clientId };
     setSyncProgress('connect', 28, '공유 저장소에 연결하고 있습니다.');
+    startSyncProgressPulse('connect', 40, '공유 저장소 응답을 기다리고 있습니다.');
+    await waitForProgressPaint();
 
     const result = await remoteRequest(url, 'save', payload);
+    stopSyncProgressPulse();
     if (!result?.ok) throw new Error(result?.message || 'remote save failed');
 
     setSyncProgress('apply', 86, '서버의 저장 결과를 확인하고 있습니다.');
@@ -424,15 +482,18 @@ async function pushRemoteState({ silent = false } = {}) {
     localStorage.setItem('bossSplitLedger.remoteUpdatedAt.v1', remoteUpdatedAt);
     setSyncProgress('apply', 96, '저장 완료 상태를 화면에 반영하고 있습니다.');
     setRemoteStatus('saved', silent ? '' : '공유 저장소에 올렸습니다.');
+    await waitForProgressPaint();
     finishSyncProgress(true, '공유 저장이 완료되었습니다.');
     return true;
   } catch (error) {
     console.warn(error);
+    stopSyncProgressPulse();
     setRemoteStatus('error', silent ? '' : '공유 저장에 실패했습니다. URL/배포 권한을 확인하세요.');
     finishSyncProgress(false, '공유 저장에 실패했습니다.');
     return false;
   } finally {
     remoteOperationRunning = false;
+    stopSyncProgressPulse();
     updateSyncActionControls();
     if (remotePendingSave) {
       remotePendingSave = false;
@@ -457,21 +518,31 @@ async function pullRemoteState({ silent = false, initial = false } = {}) {
 
   remoteOperationRunning = true;
   updateSyncActionControls();
-  startSyncProgress('load', '공유 데이터를 불러올 준비를 하고 있습니다.');
-  setRemoteStatus('loading');
 
   try {
-    setSyncProgress('connect', 26, '공유 저장소에 연결하고 있습니다.');
+    startSyncProgress('load', '공유 데이터를 불러올 준비를 하고 있습니다.');
+    setRemoteStatus('loading');
+    await waitForProgressPaint();
+
+    setSyncProgress('connect', 24, '공유 저장소에 연결하고 있습니다.');
+    startSyncProgressPulse('connect', 44, '공유 저장소 응답을 기다리고 있습니다.');
+    await waitForProgressPaint();
+
     const result = await remoteRequest(url, 'load');
+    stopSyncProgressPulse();
     if (!result?.ok) throw new Error(result?.message || 'remote load failed');
 
     if (result.empty) {
       setSyncProgress('transfer', 72, '공유 저장소가 비어 있어 현재 데이터를 최초 저장합니다.');
+      startSyncProgressPulse('transfer', 82, '최초 데이터를 저장하고 있습니다.');
       const saveResult = await remoteRequest(url, 'save', { state: serializeSharedState(), clientId: clientId });
+      stopSyncProgressPulse();
       if (!saveResult?.ok) throw new Error(saveResult?.message || 'initial remote save failed');
       remoteUpdatedAt = saveResult.updatedAt || new Date().toISOString();
       localStorage.setItem('bossSplitLedger.remoteUpdatedAt.v1', remoteUpdatedAt);
+      setSyncProgress('apply', 96, '최초 공유 저장 상태를 반영하고 있습니다.');
       setRemoteStatus('saved', silent ? '' : '공유 저장소가 비어 있어 현재 데이터를 올렸습니다.');
+      await waitForProgressPaint();
       finishSyncProgress(true, '최초 공유 저장이 완료되었습니다.');
       return true;
     }
@@ -489,16 +560,19 @@ async function pullRemoteState({ silent = false, initial = false } = {}) {
     setSyncProgress('apply', 96, '최신 데이터로 화면을 다시 구성하고 있습니다.');
     setRemoteStatus('saved', silent ? '' : '공유 데이터를 불러왔습니다.');
     render();
+    await waitForProgressPaint();
     finishSyncProgress(true, '최신 공유 데이터를 반영했습니다.');
     return true;
   } catch (error) {
     console.warn(error);
+    stopSyncProgressPulse();
     suppressRemoteSave = false;
     setRemoteStatus('error', silent ? '' : '공유 데이터 불러오기에 실패했습니다.');
     finishSyncProgress(false, '공유 데이터 불러오기에 실패했습니다.');
     return false;
   } finally {
     remoteOperationRunning = false;
+    stopSyncProgressPulse();
     updateSyncActionControls();
     if (remotePendingSave) {
       remotePendingSave = false;
@@ -514,14 +588,19 @@ async function remoteRequest(baseUrl, action, payload = null) {
   if (action === 'load') {
     const queryUrl = `${url}?action=load&t=${Date.now()}`;
     setSyncProgress('connect', 34, '서버 응답을 기다리고 있습니다.');
+    startSyncProgressPulse('connect', 58, '서버에서 공유 데이터를 준비하고 있습니다.');
     try {
       const res = await fetch(queryUrl, { method: 'GET', cache: 'no-store', redirect: 'follow' });
       const data = await res.json();
+      stopSyncProgressPulse();
       setSyncProgress('transfer', 70, '공유 데이터를 수신했습니다.');
       return data;
     } catch (error) {
+      stopSyncProgressPulse();
       setSyncProgress('connect', 46, '직접 연결이 어려워 호환 방식으로 다시 연결하고 있습니다.');
+      startSyncProgressPulse('connect', 62, '호환 방식으로 서버 응답을 기다리고 있습니다.');
       const data = await jsonpRequest(`${queryUrl}&callback=__bossSplitJsonp`);
+      stopSyncProgressPulse();
       setSyncProgress('transfer', 70, '호환 방식으로 공유 데이터를 수신했습니다.');
       return data;
     }
@@ -529,6 +608,7 @@ async function remoteRequest(baseUrl, action, payload = null) {
 
   const body = JSON.stringify({ action: action, ...payload });
   setSyncProgress('transfer', 42, '공유 저장소로 데이터를 전송하고 있습니다.');
+  startSyncProgressPulse('transfer', 68, '서버가 변경사항을 저장하고 있습니다.');
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -537,13 +617,17 @@ async function remoteRequest(baseUrl, action, payload = null) {
       redirect: 'follow',
     });
     const data = await res.json();
+    stopSyncProgressPulse();
     setSyncProgress('transfer', 76, '서버가 데이터를 수신했습니다.');
     return data;
   } catch (error) {
+    stopSyncProgressPulse();
     if (body.length > 90000) throw error;
     setSyncProgress('transfer', 54, '직접 전송이 어려워 호환 방식으로 다시 전송하고 있습니다.');
+    startSyncProgressPulse('transfer', 70, '호환 방식으로 변경사항을 저장하고 있습니다.');
     const fallbackUrl = `${url}?action=${encodeURIComponent(action)}&data=${encodeURIComponent(body)}&t=${Date.now()}&callback=__bossSplitJsonp`;
     const data = await jsonpRequest(fallbackUrl);
+    stopSyncProgressPulse();
     setSyncProgress('transfer', 76, '호환 방식으로 서버 전송을 마쳤습니다.');
     return data;
   }

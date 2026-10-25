@@ -1242,3 +1242,9 @@ input:focus, textarea:focus, select:focus { border-color: rgba(255, 190, 61, 0.8
   .sync-progress-steps { gap: 6px; }
   .sync-progress-step { padding: 7px; font-size: 10px; }
 }
+
+/* v5.5.1 progress paint reliability */
+.sync-progress-fill { will-change: width; }
+.sync-progress-panel[data-state="running"] .sync-progress-fill {
+  box-shadow: 0 0 14px rgba(255,190,61,.18);
+}
