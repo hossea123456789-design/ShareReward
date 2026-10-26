@@ -1306,3 +1306,20 @@ input:focus, textarea:focus, select:focus { border-color: rgba(255, 190, 61, 0.8
   .group-distributor { grid-template-columns: 1fr; }
   .group-distributor small { text-align: left; }
 }
+
+
+/* v5.7.0 per-item PC cafe sale fee */
+.pc-cafe-check {
+  display: flex; align-items: center; gap: 6px; margin-top: 6px;
+  color: #9fb4ce; font-size: 10px; font-weight: 850; white-space: nowrap;
+}
+.pc-cafe-check input { width: 16px; height: 16px; accent-color: var(--accent); }
+.pc-cafe-check:has(input:disabled) { opacity: .45; }
+.pc-cafe-sale-toggle {
+  display: flex; align-items: center; gap: 10px; margin: 4px 0 12px; padding: 11px 12px;
+  border: 1px solid rgba(90,167,255,.18); border-radius: 12px; background: rgba(90,167,255,.06); cursor: pointer;
+}
+.pc-cafe-sale-toggle input { width: 19px; height: 19px; accent-color: var(--accent); }
+.pc-cafe-sale-toggle span { display: grid; gap: 2px; }
+.pc-cafe-sale-toggle b { font-size: 12px; }
+.pc-cafe-sale-toggle small { color: var(--muted); font-size: 10px; }

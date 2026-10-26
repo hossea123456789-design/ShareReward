@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.6.2';
+const APP_VERSION = '5.7.0';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 const MAPLE_ITEM_DB = Array.isArray(window.MAPLE_ITEM_DB) ? window.MAPLE_ITEM_DB : [];
 const MAPLE_ITEM_CATEGORIES = ['자동', '광휘의 보스 장신구', '칠흑의 보스 장신구', '여명의 보스 장신구', '보스 장신구', '에테르넬 장비', '아케인셰이드 장비', '앱솔랩스 장비', '루타비스 장비', '연마석', '익셉셔널 해머', '기타'];
@@ -19,6 +19,7 @@ const defaultState = () => ({
   settings: {
     feeMode: 'percent',
     feeValue: 5,
+    pcCafeFeePercent: 3,
     roundingMode: 'floor_001',
     cashRatePerBillion: 0,
     bosses: ['하드 스우', '하드 데미안', '가디언 엔젤 슬라임', '진 힐라', '카오스 더스크', '듄켈', '검은 마법사', '세렌', '칼로스', '카링'],
@@ -109,6 +110,7 @@ function bindGlobalEvents() {
     const row = target.closest('tr[data-entry-row]');
     if (target.matches('[data-field="partyId"]')) syncBulkEntryMembersFromParty(row);
     if (target.matches('[data-field="members"]')) syncBulkEntryRecipientOptions(row);
+    if (target.matches('[data-field="recipient"]')) syncBulkEntryPcCafeState(row);
     if (target.matches('[data-field="item"]')) applyMapleItemMatchToRow(row);
     if (target.matches('[data-field="category"]')) target.dataset.autoMatched = '0';
     updateBulkEntrySubmitLabel();
@@ -122,7 +124,7 @@ function bindGlobalEvents() {
   });
 
   $('#saleForm').addEventListener('submit', handleSaleSubmit);
-  ['salePrice', 'feeMode', 'feeValue', 'excludeAmount', 'cashRatePerBillion', 'sellerName', 'roundingMode'].forEach(function (id) {
+  ['salePrice', 'feeMode', 'feeValue', 'pcCafeSale', 'excludeAmount', 'cashRatePerBillion', 'sellerName', 'roundingMode'].forEach(function (id) {
     const el = document.getElementById(id);
     el.addEventListener('input', renderCalcPreview);
     el.addEventListener('change', renderCalcPreview);
@@ -176,8 +178,11 @@ function normalizeState(data) {
     sale: entry.sale || null,
     payments: entry.payments || {},
   }));
+  next.settings.pcCafeFeePercent = numberOrZero(next.settings.pcCafeFeePercent || 3);
   next.entries.forEach((entry) => {
     if (entry.sale) {
+      entry.sale.pcCafeSale = Boolean(entry.sale.pcCafeSale);
+      entry.sale.pcCafeFeePercent = numberOrZero(entry.sale.pcCafeFeePercent);
       entry.sale.cashRatePerBillion = numberOrZero(entry.sale.cashRatePerBillion);
       entry.sale.sellerName = entry.sale.sellerName || entry.members[0] || '';
       entry.sale.totalCash = numberOrZero(entry.sale.totalCash);
@@ -924,6 +929,11 @@ function renderSettings() {
         </label>
       </div>
       <label class="field">
+        <span>PC방 판매 수수료율, %</span>
+        <input id="settingPcCafeFeePercent" type="number" step="0.001" min="0" max="100" value="${state.settings.pcCafeFeePercent ?? 3}" />
+        <span class="item-sub">물품별 PC방 판매 체크 시 이 수수료율을 적용합니다. 공식 기본 안내는 프리미엄 PC방 3%입니다.</span>
+      </label>
+      <label class="field">
         <span>기본 반올림 방식</span>
         <select id="settingRoundingMode">
           ${roundingOptions(state.settings.roundingMode)}
@@ -1319,6 +1329,7 @@ function makeBulkEntryRowData(entry = null) {
     salePrice: entry ? ((entry.sale && entry.sale.salePrice) != null ? entry.sale.salePrice : entry.expectedPrice) : '',
     category: entry ? getEntryCategory(entry) : '자동',
     recipient: entry ? getEntryRecipient(entry) : '',
+    pcCafeSale: entry ? Boolean(entry.sale?.pcCafeSale) : false,
   };
 }
 
@@ -1334,6 +1345,7 @@ function appendBulkEntryRow(data) {
     salePrice: data.salePrice != null ? data.salePrice : '',
     category: data.category || '자동',
     recipient: data.recipient || '',
+    pcCafeSale: Boolean(data.pcCafeSale),
   };
   const bosses = Array.from(new Set([].concat(state.settings.bosses || [], normalized.boss).filter(Boolean)));
   const bossOptions = bosses.map(function (boss) {
@@ -1342,8 +1354,7 @@ function appendBulkEntryRow(data) {
   const partyOptions = state.parties.map(function (party) {
     return '<option value="' + escapeHtml(party.id) + '"' + (party.id === normalized.partyId ? ' selected' : '') + '>' + escapeHtml(party.name) + '</option>';
   }).join('') + '<option value="__custom__"' + (normalized.partyId === '__custom__' ? ' selected' : '') + '>직접 입력</option>';
-  const categories = MAPLE_ITEM_CATEGORIES;
-  const categoryOptions = categories.map(function (category) {
+  const categoryOptions = MAPLE_ITEM_CATEGORIES.map(function (category) {
     return '<option value="' + category + '"' + (category === normalized.category ? ' selected' : '') + '>' + category + '</option>';
   }).join('');
   const recipientOptions = ['<option value="">판매 정산</option>'].concat(normalized.members.map(function (member) {
@@ -1359,9 +1370,11 @@ function appendBulkEntryRow(data) {
     '<td class="entry-col-members"><input data-field="members" type="text" value="' + escapeHtml(normalized.members.join(', ')) + '" placeholder="하람, 영권" aria-label="참여자" /></td>' +
     '<td class="entry-col-item"><div class="item-entry-wrap"><input data-field="item" type="text" list="mapleItemSuggestions" autocomplete="off" value="' + escapeHtml(normalized.item) + '" placeholder="예: 거대한 공포" aria-label="아이템" /><small class="item-match-hint" data-item-match-hint></small></div></td>' +
     '<td class="entry-col-recipient"><select data-field="recipient" aria-label="아이템 수령">' + recipientOptions + '</select></td>' +
-    '<td class="entry-col-price"><input data-field="salePrice" type="number" step="0.001" min="0" value="' + escapeHtml(normalized.salePrice) + '" placeholder="예: 10" aria-label="판매가 또는 아이템 가치" /></td>' +
+    '<td class="entry-col-price"><input data-field="salePrice" type="number" step="0.001" min="0" value="' + escapeHtml(normalized.salePrice) + '" placeholder="예: 10" aria-label="판매가 또는 아이템 가치" />' +
+      '<label class="pc-cafe-check"><input data-field="pcCafeSale" type="checkbox"' + (normalized.pcCafeSale ? ' checked' : '') + ' /><span>PC방 판매</span></label></td>' +
     '<td class="entry-col-action"><button type="button" class="danger entry-row-remove" data-entry-row-action="remove" aria-label="행 삭제">×</button></td>';
   tbody.appendChild(row);
+  syncBulkEntryPcCafeState(row);
   applyMapleItemMatchToRow(row);
   updateBulkEntrySubmitLabel();
 }
@@ -1374,6 +1387,15 @@ function addBulkEntryRowFromPrevious() {
   const itemInput = lastRow && lastRow.querySelector('[data-field="item"]');
   if (itemInput) itemInput.focus();
 }
+function syncBulkEntryPcCafeState(row) {
+  if (!row) return;
+  const recipient = (row.querySelector('[data-field="recipient"]') || {}).value || '';
+  const checkbox = row.querySelector('[data-field="pcCafeSale"]');
+  if (!checkbox) return;
+  checkbox.disabled = Boolean(recipient);
+  if (recipient) checkbox.checked = false;
+}
+
 function syncBulkEntryMembersFromParty(row) {
   if (!row) return;
   const partySelect = row.querySelector('[data-field="partyId"]');
@@ -1396,6 +1418,7 @@ function readBulkEntryRow(row) {
     members: splitMembers(((row.querySelector('[data-field="members"]') || {}).value || '')),
     item: (((row.querySelector('[data-field="item"]') || {}).value || '')).trim(),
     recipient: (row.querySelector('[data-field="recipient"]') || {}).value || '',
+    pcCafeSale: Boolean((row.querySelector('[data-field="pcCafeSale"]') || {}).checked),
     salePriceRaw: (((salePriceInput || {}).value || '')).trim(),
     salePrice: numberOrZero((salePriceInput || {}).value),
   };
@@ -1425,10 +1448,15 @@ function buildBulkEntryPayload(row, existing, now, forcedId, groupId) {
   const itemMatch = findMapleItemMatch(rawItem);
   const canonicalItem = itemMatch && !itemMatch.pattern ? itemMatch.name : rawItem;
   const category = resolveItemCategory(row.category, canonicalItem);
+  const pcCafeSale = !recipient && Boolean(row.pcCafeSale);
   const saleBasis = Object.assign({}, oldSale, {
     salePrice: salePrice,
     feeMode: oldSale.feeMode || state.settings.feeMode,
     feeValue: oldSale.feeValue != null ? oldSale.feeValue : state.settings.feeValue,
+    pcCafeSale: pcCafeSale,
+    pcCafeFeePercent: pcCafeSale
+      ? numberOrZero((oldSale.pcCafeSale && oldSale.pcCafeFeePercent) || state.settings.pcCafeFeePercent || 3)
+      : 0,
     excludeAmount: numberOrZero(oldSale.excludeAmount),
     roundingMode: oldSale.roundingMode || state.settings.roundingMode,
     sellerName: oldSale.sellerName || members[0] || '',
@@ -1528,6 +1556,7 @@ function openSaleDialog(id) {
   $('#salePrice').value = entry.sale?.salePrice || entry.expectedPrice || '';
   $('#feeMode').value = entry.sale?.feeMode || state.settings.feeMode;
   $('#feeValue').value = entry.sale?.feeValue ?? state.settings.feeValue;
+  $('#pcCafeSale').checked = Boolean(entry.sale?.pcCafeSale);
   $('#feeValueLabel').textContent = $('#feeMode').value === 'percent' ? '수수료 %' : '수수료 금액, 억 단위';
   $('#excludeAmount').value = entry.sale?.excludeAmount || 0;
   $('#cashRatePerBillion').value = entry.sale?.cashRatePerBillion ?? state.settings.cashRatePerBillion ?? 0;
@@ -1557,6 +1586,7 @@ function renderCalcPreview() {
     : '억당 현금가를 입력하면 현금 전달액이 표시됩니다.<br>';
   preview.innerHTML = `
     판매가: <b>${formatAmount(calc.salePrice)}</b><br>
+    판매 방식: <b>${calc.pcCafeSale ? 'PC방 판매 · ' + calc.pcCafeFeePercent + '%' : '일반 판매'}</b><br>
     수수료: <b>${formatAmount(calc.feeAmount)}</b><br>
     정산 제외: <b>${formatAmount(calc.excludeAmount)}</b><br>
     최종 정산금액: <b>${formatAmount(calc.netAmount)}</b><br>
@@ -1567,8 +1597,9 @@ function renderCalcPreview() {
 
 function calculateSale(entry) {
   const salePrice = numberOrZero($('#salePrice').value);
-  const feeMode = $('#feeMode').value;
-  const feeValue = numberOrZero($('#feeValue').value);
+  const pcCafeSale = Boolean($('#pcCafeSale')?.checked);
+  const feeMode = pcCafeSale ? 'percent' : $('#feeMode').value;
+  const feeValue = pcCafeSale ? numberOrZero(state.settings.pcCafeFeePercent || 3) : numberOrZero($('#feeValue').value);
   const excludeAmount = numberOrZero($('#excludeAmount').value);
   const cashRatePerBillion = numberOrZero($('#cashRatePerBillion').value);
   const sellerName = $('#sellerName').value || entry.members[0] || '';
@@ -1582,7 +1613,9 @@ function calculateSale(entry) {
   const receiverCount = Math.max(0, entry.members.filter((m) => m !== sellerName).length);
   const transferCash = roundWon(perPersonCash * receiverCount);
   return {
-    salePrice, feeMode, feeValue, feeAmount, excludeAmount, netAmount, perPerson, roundingMode,
+    salePrice, feeMode, feeValue, feeAmount, pcCafeSale,
+    pcCafeFeePercent: pcCafeSale ? feeValue : 0,
+    excludeAmount, netAmount, perPerson, roundingMode,
     cashRatePerBillion, sellerName, totalCash, perPersonCash, transferCash,
   };
 }
@@ -1673,8 +1706,15 @@ function calculateEntry(entry) {
   const sale = entry?.sale || {};
   const salePrice = numberOrZero(sale.salePrice ?? entry?.expectedPrice);
   const recipient = getEntryRecipient(entry);
-  const feeMode = sale.feeMode || state.settings.feeMode;
-  const feeValue = sale.feeValue ?? state.settings.feeValue;
+  const pcCafeSale = !recipient && Boolean(sale.pcCafeSale);
+  const storedPcRate = numberOrZero(sale.pcCafeFeePercent);
+  const pcCafeFeePercent = entry?.status === 'done'
+    ? numberOrZero(storedPcRate || state.settings.pcCafeFeePercent || 3)
+    : numberOrZero(state.settings.pcCafeFeePercent || storedPcRate || 3);
+  const baseFeeMode = sale.feeMode || state.settings.feeMode;
+  const baseFeeValue = sale.feeValue ?? state.settings.feeValue;
+  const feeMode = pcCafeSale ? 'percent' : baseFeeMode;
+  const feeValue = pcCafeSale ? pcCafeFeePercent : baseFeeValue;
   const excludeAmount = numberOrZero(sale.excludeAmount);
   const roundingMode = sale.roundingMode || state.settings.roundingMode;
   const feeAmount = recipient ? 0 : (feeMode === 'percent' ? salePrice * (numberOrZero(feeValue) / 100) : numberOrZero(feeValue));
@@ -1689,19 +1729,10 @@ function calculateEntry(entry) {
   const totalCash = roundWon(netAmount * cashRatePerBillion);
   const perPersonCash = roundWon(perPerson * cashRatePerBillion);
   return {
-    salePrice: salePrice,
-    feeMode: feeMode,
-    feeValue: numberOrZero(feeValue),
-    feeAmount: feeAmount,
-    excludeAmount: excludeAmount,
-    netAmount: netAmount,
-    perPerson: perPerson,
-    rawPerPerson: rawPerPerson,
-    roundingMode: roundingMode,
-    cashRatePerBillion: cashRatePerBillion,
-    totalCash: totalCash,
-    perPersonCash: perPersonCash,
-    recipient: recipient,
+    salePrice, feeMode, feeValue: numberOrZero(feeValue), feeAmount,
+    pcCafeSale, pcCafeFeePercent: pcCafeSale ? pcCafeFeePercent : 0,
+    excludeAmount, netAmount, perPerson, rawPerPerson, roundingMode,
+    cashRatePerBillion, totalCash, perPersonCash, recipient,
   };
 }
 
@@ -1803,7 +1834,8 @@ function buildBatchShareText(entries) {
       } else {
         const holder = entry.sale?.sellerName || entry.members?.[0] || '-';
         lines.push('💰 ' + entry.boss + ' · ' + entry.item);
-        lines.push(formatAmount(calc.netAmount) + ' → 1인 ' + formatAmount(calc.rawPerPerson) + ' · 보유 ' + holder);
+        const feeLabel = calc.pcCafeSale ? 'PC방 ' + calc.pcCafeFeePercent + '%' : (calc.feeMode === 'percent' ? '수수료 ' + calc.feeValue + '%' : '고정 수수료');
+        lines.push(formatAmount(calc.netAmount) + ' → 1인 ' + formatAmount(calc.rawPerPerson) + ' · ' + feeLabel + ' · 보유 ' + holder);
       }
       lines.push('');
     });
@@ -2271,7 +2303,7 @@ function pendingGroupCard(group) {
     const recipient = getEntryRecipient(entry);
     const receiptLine = recipient
       ? '<span class="recipient-chip">🎁 ' + escapeHtml(recipient) + ' 직접 수령</span>'
-      : '<span class="sale-chip">💰 판매 정산</span>';
+      : '<span class="sale-chip">💰 판매 정산' + (calc.pcCafeSale ? ' · PC방 ' + calc.pcCafeFeePercent + '%' : '') + '</span>';
     const holderControl = renderEntrySaleHolderControl(entry);
     return '<div class="group-item">' +
       '<label class="group-item-check"><input type="checkbox" data-action="select-entry" data-id="' + escapeHtml(entry.id) + '"' + (selectedEntryIds.has(entry.id) ? ' checked' : '') + ' /></label>' +
@@ -2300,7 +2332,7 @@ function completedGroupCard(group) {
     const recipient = getEntryRecipient(entry);
     const receiptLine = recipient
       ? '<span class="recipient-chip">🎁 ' + escapeHtml(recipient) + ' 직접 수령</span>'
-      : '<span class="sale-chip">💰 판매 정산</span>';
+      : '<span class="sale-chip">💰 판매 정산' + (calc.pcCafeSale ? ' · PC방 ' + calc.pcCafeFeePercent + '%' : '') + '</span>';
     const holderControl = renderEntrySaleHolderControl(entry);
     return '<div class="group-item completed done-selectable">' +
       '<label class="group-item-check"><input type="checkbox" data-action="select-done-entry" data-id="' + escapeHtml(entry.id) + '"' + (selectedDoneEntryIds.has(entry.id) ? ' checked' : '') + ' /></label>' +
@@ -2687,10 +2719,11 @@ function renderMonthlySummary(monthKey, scope = 'month') {
 function saveRules() {
   state.settings.feeMode = $('#settingFeeMode').value;
   state.settings.feeValue = numberOrZero($('#settingFeeValue').value);
+  state.settings.pcCafeFeePercent = numberOrZero($('#settingPcCafeFeePercent').value);
   state.settings.roundingMode = $('#settingRoundingMode').value;
   state.settings.cashRatePerBillion = numberOrZero($('#settingCashRatePerBillion').value);
   saveState();
-  showToast('정산 규칙을 저장했습니다. 정산대기 금액에 최신 시세가 즉시 반영됩니다.');
+  showToast('정산 규칙을 저장했습니다. 일반/PC방 수수료 설정이 정산대기 항목에 반영됩니다.');
   renderSettings();
 }
 
