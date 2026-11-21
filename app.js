@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'bossSplitLedger.v1';
 const REMOTE_URL_KEY = 'bossSplitLedger.remoteUrl.v1';
 const CLIENT_ID_KEY = 'bossSplitLedger.clientId.v1';
-const APP_VERSION = '5.7.0';
+const APP_VERSION = '5.7.1';
 const DEFAULT_REMOTE_URL = (window.BOSS_SPLIT_REMOTE_URL || '').trim() || 'https://script.google.com/macros/s/AKfycbwn3g81buXd0YFZsq3qdXFJxk6KCKfMlR1WXEdMffAUsoq3glf9PVr5zebCJvkrL7H2/exec'; // 기본 공유 저장소 URL
 const MAPLE_ITEM_DB = Array.isArray(window.MAPLE_ITEM_DB) ? window.MAPLE_ITEM_DB : [];
 const MAPLE_ITEM_CATEGORIES = ['자동', '광휘의 보스 장신구', '칠흑의 보스 장신구', '여명의 보스 장신구', '보스 장신구', '에테르넬 장비', '아케인셰이드 장비', '앱솔랩스 장비', '루타비스 장비', '연마석', '익셉셔널 해머', '기타'];
@@ -1055,6 +1055,7 @@ function handleAppClick(event) {
     detail: function () { openDetail(id); },
     'back-list': function () { state.detailId = null; saveState({ localOnly: true }); render(); },
     'edit-entry': function () { openBulkEntryDialog(findEntry(id)); },
+    'edit-completed-price': function () { openCompletedPriceEdit(id); },
     'delete-entry': function () { deleteEntry(id); },
     'copy-share': function () { copyShare(id); },
     'select-all-pending': selectAllPending,
@@ -1302,6 +1303,22 @@ function handleEntrySubmit(event) {
 }
 
 
+function openCompletedPriceEdit(id) {
+  const entry = findEntry(id);
+  if (!entry || entry.status !== 'done') return;
+  openBulkEntryDialog(entry);
+  $('#entryDialogTitle').textContent = '완료 가격 수정';
+  const desc = document.querySelector('.entry-dialog-desc');
+  if (desc) desc.textContent = '완료 상태는 유지됩니다. 금액을 수정하면 같은 그룹의 최종 정산과 최근 공유문이 자동 재계산됩니다.';
+  const priceInput = document.querySelector('#entryRows [data-field="salePrice"]');
+  if (priceInput) {
+    setTimeout(function () {
+      priceInput.focus();
+      if (typeof priceInput.select === 'function') priceInput.select();
+    }, 0);
+  }
+}
+
 function openBulkEntryDialog(entry = null, targetGroupId = '') {
   populateMapleItemDatalist();
   const tbody = $('#entryRows');
@@ -1490,6 +1507,7 @@ function handleBulkEntrySubmit(event) {
   const editingId = $('#entryId').value;
   const existing = editingId ? findEntry(editingId) : null;
   const wasDone = existing && existing.status === 'done';
+  const previousSalePrice = existing ? numberOrZero(existing.sale?.salePrice ?? existing.expectedPrice) : 0;
   const rows = getActiveBulkEntryRows();
   if (!rows.length) { showToast('정산 항목과 금액을 1건 이상 입력하세요.'); return; }
   if (existing && rows.length !== 1) { showToast('기존 정산 수정은 1건만 가능합니다.'); return; }
@@ -1529,7 +1547,16 @@ function handleBulkEntrySubmit(event) {
       selectedDoneEntryIds.add(payload.id);
       refreshLatestShareForGroup(getEntryGroupId(payload));
     }
-    showToast(wasDone ? '완료 정산을 수정하고 최근 공유문까지 갱신했습니다.' : '정산을 수정했습니다.');
+    if (wasDone) {
+      const groupEntries = state.entries.filter(function (entry) { return entry.status === 'done' && getEntryGroupId(entry) === getEntryGroupId(payload); });
+      const settlement = calculateGroupSettlement(groupEntries);
+      const transfer = settlement.transfers[0];
+      const transferText = transfer ? transfer.from + ' → ' + transfer.to + ' ' + formatAmount(transfer.amount) : '추가 송금 없음';
+      const priceChanged = Math.abs(previousSalePrice - numberOrZero(payload.sale?.salePrice)) > 0.0000001;
+      showToast((priceChanged ? '가격 수정 완료 · ' + formatAmount(previousSalePrice) + ' → ' + formatAmount(payload.sale?.salePrice) + ' · ' : '완료 정산 수정 · ') + transferText);
+    } else {
+      showToast('정산을 수정했습니다.');
+    }
   } else {
     const payloads = rows.map(function (row) { return buildBulkEntryPayload(row, null, now, '', groupId); });
     state.entries.unshift.apply(state.entries, payloads);
@@ -2339,7 +2366,10 @@ function completedGroupCard(group) {
       '<div class="group-item-main"><b>' + escapeHtml(entry.boss) + ' · ' + escapeHtml(entry.item) + '</b>' +
       '<span>' + escapeHtml(getEntryCategory(entry)) + ' · ' + formatAmount(calc.netAmount) + '</span>' +
       '<div class="receipt-indicator">' + receiptLine + '</div>' + holderControl + '</div>' +
-      '<button class="secondary small" data-action="edit-entry" data-id="' + escapeHtml(entry.id) + '">수정</button>' +
+      '<div class="completed-item-actions">' +
+        '<button class="primary small" data-action="edit-completed-price" data-id="' + escapeHtml(entry.id) + '">가격 수정</button>' +
+        '<button class="secondary small" data-action="edit-entry" data-id="' + escapeHtml(entry.id) + '">전체 수정</button>' +
+      '</div>' +
       '</div>';
   }).join('');
 
